@@ -1,0 +1,210 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>CRIMOTHY: Grand Theft Possum</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <div id="game-container">
+    <canvas id="game-canvas"></canvas>
+
+    <!-- TOP HUD -->
+    <div id="hud-top">
+      <!-- Left: Player Stats & Meters -->
+      <div class="hud-panel hud-left">
+        <div class="portrait-box" id="possum-portrait" title="Crimothy Status">
+          <div class="portrait-face" id="portrait-emoji">🦝</div>
+          <div class="portrait-label" id="portrait-state">RIDING DIRTY</div>
+        </div>
+        <div class="bars-container">
+          <div class="stat-row">
+            <span class="stat-label">HP / GRIT</span>
+            <div class="progress-bar hp-bar">
+              <div class="progress-fill" id="hp-fill" style="width: 100%"></div>
+            </div>
+          </div>
+          <div class="stat-row">
+            <span class="stat-label">NITRO BOOST</span>
+            <div class="progress-bar boost-bar">
+              <div class="progress-fill" id="boost-fill" style="width: 100%"></div>
+            </div>
+          </div>
+          <div class="stat-row">
+            <span class="stat-label">PLAY DEAD</span>
+            <div class="progress-bar dead-bar">
+              <div class="progress-fill" id="dead-fill" style="width: 100%"></div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Center: Combo & Crime Banner -->
+      <div class="hud-center">
+        <div id="combo-box" class="hidden">
+          <div id="combo-multiplier">2.5x CRIME SPREE!</div>
+          <div id="combo-score">+450 SHINIES</div>
+          <div class="combo-timer-bar">
+            <div id="combo-timer-fill"></div>
+          </div>
+        </div>
+        <div id="bounty-banner">
+          <span class="bounty-tag">ACTIVE CHALLENGE:</span>
+          <span id="bounty-text">Tip 3 Trash Cans & Land a Kickflip (0/3)</span>
+        </div>
+        <div id="district-banner">
+          <span id="current-district-name">📍 SCRAP-HEAP SUBURBS</span>
+          <span class="district-divider">|</span>
+          <span id="next-district-status">🔒 NEXT: NEON DOWNTOWN (0 / 1,500 💀)</span>
+        </div>
+      </div>
+
+      <!-- Right: Wanted Level & Loot -->
+      <div class="hud-panel hud-right">
+        <div class="wanted-row" id="wanted-stars" title="Animal Control Heat">
+          <span class="star" data-level="1">🚨</span>
+          <span class="star" data-level="2">🚨</span>
+          <span class="star" data-level="3">🚨</span>
+          <span class="star" data-level="4">🚨</span>
+          <span class="star" data-level="5">🚨</span>
+        </div>
+        <div class="heat-meter-wrap">
+          <div id="heat-status">HEAT: CHILL</div>
+          <div class="heat-bar">
+            <div id="heat-fill" style="width: 0%"></div>
+          </div>
+        </div>
+        <div class="currency-row">
+          <div class="currency-item" title="Shiny Loot (Spend on Scooter Upgrades)">
+            <span class="currency-icon">✨</span>
+            <span id="shiny-count">0</span>
+            <span class="currency-sub">SHINIES</span>
+          </div>
+          <div class="currency-item" title="Total Infamy Score">
+            <span class="currency-icon">💀</span>
+            <span id="infamy-count">0</span>
+            <span class="currency-sub">INFAMY</span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- BOTTOM HUD -->
+    <div id="hud-bottom">
+      <!-- Left: Minimap -->
+      <div class="minimap-wrapper">
+        <canvas id="minimap-canvas" width="170" height="170"></canvas>
+        <div class="minimap-legend">
+          <span><i class="dot dot-home"></i>Hideout</span>
+          <span><i class="dot dot-graffiti"></i>Tag Spot</span>
+          <span><i class="dot dot-cop"></i>Control</span>
+        </div>
+      </div>
+
+      <!-- Center: Contextual Action Prompt -->
+      <div id="action-prompt" class="hidden">
+        Press <kbd>E</kbd> to Spray Graffiti!
+      </div>
+
+      <!-- Right: Quick Controls & Upgrade Button -->
+      <div class="controls-card">
+        <div class="controls-grid">
+          <div><kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd> Ride / Steer</div>
+          <div><kbd>SPACE</kbd> Bunnyhop / Trick</div>
+          <div><kbd>SHIFT</kbd> Rocket Boost</div>
+          <div><kbd>E</kbd> Crime / Tag / Snatch</div>
+          <div><kbd>Q</kbd> <strong>PLAY DEAD</strong></div>
+          <div><kbd>Z</kbd> / <kbd>X</kbd> Air Tricks</div>
+        </div>
+        <div class="hud-buttons">
+          <button id="btn-shop" class="arcade-btn shop-btn">
+            🛒 DUMPSTER GARAGE (<kbd>TAB</kbd>)
+          </button>
+          <button id="btn-mute" class="arcade-btn icon-btn" title="Toggle Sound">
+            🔊
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <!-- CRIME TICKER FEED (Top Right under Wanted) -->
+    <div id="crime-feed"></div>
+
+    <!-- DISTRICT UNLOCK CELEBRATION BANNER -->
+    <div id="unlock-banner" class="hidden">
+      <div class="unlock-badge">🔓 NEW DISTRICT UNLOCKED!</div>
+      <div id="unlock-title">NEON DOWNTOWN & SKATE PLAZA</div>
+      <div id="unlock-subtitle">Barricades destroyed! ATMs, Mega Ramps & 1.5x Loot now open!</div>
+    </div>
+
+    <!-- UPGRADE SHOP MODAL (DUMPSTER GARAGE) -->
+    <div id="shop-modal" class="modal-overlay hidden">
+      <div class="modal-card">
+        <div class="modal-header">
+          <div>
+            <h2>🗑️ BIG SAL'S DUMPSTER GARAGE</h2>
+            <p class="modal-subtitle">"Custom Scooter Parts for Discerning Trash Mammals"</p>
+          </div>
+          <div class="shop-balance">
+            ✨ <span id="shop-shiny-count">0</span> SHINIES
+          </div>
+          <button id="btn-close-shop" class="close-btn">✕</button>
+        </div>
+        <div id="upgrade-list" class="upgrade-grid">
+          <!-- Populated dynamically by game.js -->
+        </div>
+        <div class="modal-footer">
+          <button id="btn-repair" class="arcade-btn repair-btn">
+            🍕 EAT WARM DUMPSTER PIZZA (FULL HEAL - 25 ✨)
+          </button>
+          <button id="btn-resume" class="arcade-btn primary-btn">
+            BACK TO THE STREETS (<kbd>TAB</kbd>)
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <!-- START / TITLE OVERLAY -->
+    <div id="title-modal" class="modal-overlay">
+      <div class="title-card">
+        <div class="title-badge">TRASH PANDA GAMES PRESENTS</div>
+        <h1 class="game-title">CRIMOTHY</h1>
+        <h2 class="game-subtitle">GRAND THEFT POSSUM</h2>
+        <p class="title-desc">
+          You are <strong>Crimothy</strong>: a chaotic North American Virginia Opossum with a stolen kick-scooter, a can of neon spray paint, and zero respect for municipal ordinances.
+        </p>
+        <div class="feature-pills">
+          <span>🛴 Shred & Pull Air Tricks</span>
+          <span>👜 Snatch Purses & Pizza</span>
+          <span>🎨 Tag Walls & Smash Bins</span>
+          <span>💀 Play Dead to Fool Cops</span>
+          <span>🚀 Upgrade Your Rig</span>
+        </div>
+        <button id="btn-start-game" class="arcade-btn start-btn">
+          🛴 HIT THE STREETS!
+        </button>
+      </div>
+    </div>
+
+    <!-- BUSTED OVERLAY -->
+    <div id="busted-modal" class="modal-overlay hidden">
+      <div class="title-card busted-card">
+        <h1 class="busted-title">CAGED & TAGGED!</h1>
+        <p id="busted-reason">Animal Control scooped you up in a giant butterfly net!</p>
+        <div class="busted-stats" id="busted-stats"></div>
+        <button id="btn-respawn" class="arcade-btn start-btn">
+          🦷 CHEW THROUGH THE CAGE & RIDE AGAIN
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <script src="js/audio.js"></script>
+  <script src="js/world.js"></script>
+  <script src="js/entities.js"></script>
+  <script src="js/player.js"></script>
+  <script src="js/game.js"></script>
+</body>
+</html>
+
