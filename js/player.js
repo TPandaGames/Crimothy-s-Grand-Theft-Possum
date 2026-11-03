@@ -200,6 +200,8 @@ class Player {
     if (this.trickCooldown > 0) this.trickCooldown -= dt;
     if (this.playDeadCooldown > 0) this.playDeadCooldown -= dt;
 
+    const touch = game.touchState || { joyActive: false, joyMag: 0, joyAngle: 0, boostPressed: false };
+
     // Handle Play Dead state
     if (this.isPlayingDead) {
       const drainRate = Math.max(7, 18 - this.upgrades.acting * 4);
@@ -213,8 +215,8 @@ class Player {
       this.vy *= 0.88;
       this.speed = Math.hypot(this.vx, this.vy);
 
-      // Wake up if energy runs out or player presses gas/jump
-      if (this.playDeadEnergy <= 0 || keys['KeyW'] || keys['ArrowUp']) {
+      // Wake up if energy runs out or player presses gas/jump or pushes touch joystick
+      if (this.playDeadEnergy <= 0 || keys['KeyW'] || keys['ArrowUp'] || (touch.joyActive && touch.joyMag > 0.45)) {
         this.isPlayingDead = false;
         this.playDeadCooldown = 1.2;
         entities.addFloatingText(this.x, this.y - 28, "🛴 BACK ON THE DECK!", "#ffd43b", 14);
@@ -224,17 +226,25 @@ class Player {
       this.playDeadEnergy = Math.min(this.maxPlayDead, this.playDeadEnergy + 14 * dt);
     }
 
-    // Steering
+    // Steering (Keyboard or Virtual Analog Thumbstick)
     const turnSpeed = 3.5 + this.upgrades.wheels * 0.25;
-    if (keys['KeyA'] || keys['ArrowLeft']) {
-      this.angle -= turnSpeed * dt;
-    }
-    if (keys['KeyD'] || keys['ArrowRight']) {
-      this.angle += turnSpeed * dt;
+    if (touch.joyActive && touch.joyMag > 0.14) {
+      const angleDiff = Math.atan2(
+        Math.sin(touch.joyAngle - this.angle),
+        Math.cos(touch.joyAngle - this.angle)
+      );
+      this.angle += angleDiff * Math.min(1, dt * (turnSpeed * 2.4));
+    } else {
+      if (keys['KeyA'] || keys['ArrowLeft']) {
+        this.angle -= turnSpeed * dt;
+      }
+      if (keys['KeyD'] || keys['ArrowRight']) {
+        this.angle += turnSpeed * dt;
+      }
     }
 
-    // Rocket Boost
-    if ((keys['ShiftLeft'] || keys['ShiftRight']) && this.boost > 5) {
+    // Rocket Boost (Shift or Touch Boost Button)
+    if ((keys['ShiftLeft'] || keys['ShiftRight'] || touch.boostPressed) && this.boost > 5) {
       this.boostActive = true;
       const drain = Math.max(12, 26 - this.upgrades.rocket * 5);
       this.boost = Math.max(0, this.boost - drain * dt);
@@ -257,7 +267,11 @@ class Player {
     const maxSpd = this.getMaxSpeed();
     const accel = this.boostActive ? 540 : 340 + this.upgrades.wheels * 35;
 
-    if (keys['KeyW'] || keys['ArrowUp'] || this.boostActive) {
+    if (touch.joyActive && touch.joyMag > 0.14) {
+      const throttleMult = Math.min(1, touch.joyMag);
+      this.vx += Math.cos(this.angle) * accel * throttleMult * dt;
+      this.vy += Math.sin(this.angle) * accel * throttleMult * dt;
+    } else if (keys['KeyW'] || keys['ArrowUp'] || this.boostActive) {
       this.vx += Math.cos(this.angle) * accel * dt;
       this.vy += Math.sin(this.angle) * accel * dt;
     } else if (keys['KeyS'] || keys['ArrowDown']) {

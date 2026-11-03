@@ -19,6 +19,17 @@ class Game {
     this.shopOpen = false;
     this.time = 0;
 
+    // Input Method Detection & Touch State
+    this.inputMethod = 'keyboard'; // 'keyboard' | 'touch'
+    this.manualInputOverride = false;
+    this.touchState = {
+      joyActive: false,
+      joyTouchId: null,
+      joyAngle: 0,
+      joyMag: 0,
+      boostPressed: false
+    };
+
     // Economy & Infamy
     this.shinies = 40; // Starter shinies so player can test upgrades early!
     this.infamy = 0;
@@ -106,7 +117,9 @@ class Game {
       }
     ];
 
+    this.detectInitialInputMethod();
     this.bindEvents();
+    this.bindTouchControls();
     this.updateHUD();
     this.renderShop();
 
@@ -119,8 +132,44 @@ class Game {
     this.canvas.height = window.innerHeight;
   }
 
+  detectInitialInputMethod() {
+    const isCoarse = window.matchMedia && window.matchMedia('(pointer: coarse)').matches;
+    const hasTouch = ('ontouchstart' in window) || (navigator.maxTouchPoints > 0);
+    if (isCoarse || (hasTouch && window.innerWidth <= 1024)) {
+      this.setInputMethod('touch', false);
+    } else {
+      this.setInputMethod('keyboard', false);
+    }
+  }
+
+  setInputMethod(mode, isManual = false) {
+    if (isManual) {
+      this.manualInputOverride = true;
+    }
+    if (this.inputMethod === mode && document.body.classList.contains('input-touch') === (mode === 'touch')) {
+      return;
+    }
+    this.inputMethod = mode;
+    const isTouch = mode === 'touch';
+
+    document.body.classList.toggle('input-touch', isTouch);
+    const touchOverlay = document.getElementById('touch-controls');
+    if (touchOverlay) {
+      touchOverlay.classList.toggle('hidden', !isTouch);
+    }
+
+    const kbBtn = document.getElementById('btn-input-mode');
+    const touchBtn = document.getElementById('touch-btn-input');
+    if (kbBtn) kbBtn.textContent = isTouch ? '📱 TOUCH' : '⌨️ KB/M';
+    if (touchBtn) touchBtn.textContent = isTouch ? '📱 TOUCH' : '⌨️ KB/M';
+  }
+
   bindEvents() {
+    // Auto-detect physical keyboard usage
     window.addEventListener('keydown', (e) => {
+      if (!this.manualInputOverride && this.inputMethod !== 'keyboard') {
+        this.setInputMethod('keyboard', false);
+      }
       this.keys[e.code] = true;
 
       if (e.code === 'Tab') {
@@ -145,9 +194,16 @@ class Game {
       this.keys[e.code] = false;
     });
 
-    // Mouse buttons for quick tricks / action
+    // Auto-detect touch usage anywhere on screen
+    window.addEventListener('touchstart', () => {
+      if (!this.manualInputOverride && this.inputMethod !== 'touch') {
+        this.setInputMethod('touch', false);
+      }
+    }, { passive: true });
+
+    // Mouse buttons for quick tricks / action (only when in keyboard/mouse mode)
     this.canvas.addEventListener('mousedown', (e) => {
-      if (this.paused) return;
+      if (this.paused || this.inputMethod === 'touch') return;
       if (e.button === 0) {
         if (this.player.z > 10) {
           this.player.performAirTrick('KICKFLIP', this.entities);
@@ -169,8 +225,25 @@ class Game {
     });
 
     document.getElementById('btn-shop').addEventListener('click', () => this.toggleShop());
+    document.getElementById('touch-btn-shop').addEventListener('click', () => this.toggleShop());
     document.getElementById('btn-close-shop').addEventListener('click', () => this.toggleShop());
     document.getElementById('btn-resume').addEventListener('click', () => this.toggleShop());
+
+    const toggleInputModeBtn = () => {
+      const nextMode = this.inputMethod === 'touch' ? 'keyboard' : 'touch';
+      this.setInputMethod(nextMode, true);
+      if (this.entities && this.player) {
+        this.entities.addFloatingText(
+          this.player.x,
+          this.player.y - 40,
+          nextMode === 'touch' ? '📱 TOUCH CONTROLS ENABLED' : '⌨️ KEYBOARD/MOUSE ENABLED',
+          '#63e6be',
+          15
+        );
+      }
+    };
+    document.getElementById('btn-input-mode').addEventListener('click', toggleInputModeBtn);
+    document.getElementById('touch-btn-input').addEventListener('click', toggleInputModeBtn);
 
     document.getElementById('btn-repair').addEventListener('click', () => {
       if (this.shinies >= 25 && this.player.hp < this.player.maxHp) {
@@ -183,10 +256,14 @@ class Game {
       }
     });
 
-    document.getElementById('btn-mute').addEventListener('click', (e) => {
+    const toggleMuteBoth = () => {
       const muted = window.SFX.toggleMute();
-      e.currentTarget.textContent = muted ? '🔇' : '🔊';
-    });
+      const icon = muted ? '🔇' : '🔊';
+      document.getElementById('btn-mute').textContent = icon;
+      document.getElementById('touch-btn-mute').textContent = icon;
+    };
+    document.getElementById('btn-mute').addEventListener('click', toggleMuteBoth);
+    document.getElementById('touch-btn-mute').addEventListener('click', toggleMuteBoth);
 
     document.getElementById('btn-respawn').addEventListener('click', () => {
       document.getElementById('busted-modal').classList.add('hidden');
@@ -197,6 +274,148 @@ class Game {
       this.entities.nets = [];
       this.paused = false;
       this.updateHUD();
+    });
+  }
+
+  bindTouchControls() {
+    const joyZone = document.getElementById('touch-joystick-zone');
+    const joyBase = document.getElementById('joystick-base');
+    const joyKnob = document.getElementById('joystick-knob');
+    const maxRadius = 44;
+
+    const updateJoystickFromPoint = (clientX, clientY) => {
+      const rect = joyBase.getBoundingClientRect();
+      const cx = rect.left + rect.width / 2;
+      const cy = rect.top + rect.height / 2;
+      const dx = clientX - cx;
+      const dy = clientY - cy;
+      const dist = Math.hypot(dx, dy);
+      const clamped = Math.min(maxRadius, dist);
+      const angle = Math.atan2(dy, dx);
+
+      const kx = Math.cos(angle) * clamped;
+      const ky = Math.sin(angle) * clamped;
+      joyKnob.style.transform = `translate(${kx}px, ${ky}px)`;
+
+      this.touchState.joyActive = true;
+      this.touchState.joyAngle = angle;
+      this.touchState.joyMag = clamped / maxRadius;
+    };
+
+    const resetJoystick = () => {
+      joyKnob.style.transform = 'translate(0px, 0px)';
+      this.touchState.joyActive = false;
+      this.touchState.joyTouchId = null;
+      this.touchState.joyMag = 0;
+    };
+
+    // Multi-touch events for Virtual Analog Thumbstick
+    joyZone.addEventListener('touchstart', (e) => {
+      e.preventDefault();
+      window.SFX.init();
+      const touch = e.changedTouches[0];
+      this.touchState.joyTouchId = touch.identifier;
+      updateJoystickFromPoint(touch.clientX, touch.clientY);
+    }, { passive: false });
+
+    joyZone.addEventListener('touchmove', (e) => {
+      e.preventDefault();
+      for (let i = 0; i < e.changedTouches.length; i++) {
+        const t = e.changedTouches[i];
+        if (t.identifier === this.touchState.joyTouchId) {
+          updateJoystickFromPoint(t.clientX, t.clientY);
+          break;
+        }
+      }
+    }, { passive: false });
+
+    const onJoyTouchEnd = (e) => {
+      for (let i = 0; i < e.changedTouches.length; i++) {
+        if (e.changedTouches[i].identifier === this.touchState.joyTouchId) {
+          resetJoystick();
+          break;
+        }
+      }
+    };
+    joyZone.addEventListener('touchend', onJoyTouchEnd, { passive: false });
+    joyZone.addEventListener('touchcancel', onJoyTouchEnd, { passive: false });
+
+    // Also allow mouse dragging on the virtual joystick when testing Touch Mode on PC
+    let mouseJoyDown = false;
+    joyZone.addEventListener('mousedown', (e) => {
+      e.preventDefault();
+      mouseJoyDown = true;
+      updateJoystickFromPoint(e.clientX, e.clientY);
+    });
+    window.addEventListener('mousemove', (e) => {
+      if (mouseJoyDown) {
+        updateJoystickFromPoint(e.clientX, e.clientY);
+      }
+    });
+    window.addEventListener('mouseup', () => {
+      if (mouseJoyDown) {
+        mouseJoyDown = false;
+        resetJoystick();
+      }
+    });
+
+    // Helper for Right-Side Arcade Touch Action Buttons
+    const bindActionBtn = (id, onDown, onUp = null) => {
+      const btn = document.getElementById(id);
+      if (!btn) return;
+
+      const handleStart = (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        window.SFX.init();
+        btn.classList.add('pressed');
+        if (!this.paused) onDown();
+      };
+      const handleEnd = (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        btn.classList.remove('pressed');
+        if (onUp) onUp();
+      };
+
+      btn.addEventListener('touchstart', handleStart, { passive: false });
+      btn.addEventListener('touchend', handleEnd, { passive: false });
+      btn.addEventListener('touchcancel', handleEnd, { passive: false });
+      btn.addEventListener('mousedown', handleStart);
+      btn.addEventListener('mouseup', handleEnd);
+      btn.addEventListener('mouseleave', handleEnd);
+    };
+
+    // 1. HOP / TAILWHIP Button
+    bindActionBtn('touch-btn-jump', () => {
+      this.player.triggerBunnyHop(this.entities);
+    });
+
+    // 2. BOOST Button (Hold)
+    bindActionBtn(
+      'touch-btn-boost',
+      () => { this.touchState.boostPressed = true; },
+      () => { this.touchState.boostPressed = false; }
+    );
+
+    // 3. CRIME / TAG Button
+    bindActionBtn('touch-btn-crime', () => {
+      this.player.performActionCrime(this.world, this.entities, this);
+    });
+
+    // 4. PLAY DEAD Button
+    bindActionBtn('touch-btn-dead', () => {
+      this.player.togglePlayDead(this.entities, this);
+    });
+
+    // 5. AIR FLIP / 360 SPIN Button
+    bindActionBtn('touch-btn-flip', () => {
+      if (this.player.z < 12) {
+        this.player.triggerBunnyHop(this.entities);
+      } else {
+        const trick = Math.random() < 0.5 ? 'KICKFLIP' : '360 POSSUM SPIN';
+        this.player.performAirTrick(trick, this.entities);
+      }
     });
   }
 
@@ -406,20 +625,23 @@ class Game {
   updateContextualPrompt() {
     const promptEl = document.getElementById('action-prompt');
     let promptHTML = null;
+    const isTouch = this.inputMethod === 'touch';
+    const actKey = isTouch ? `<kbd>🎨 CRIME</kbd>` : `<kbd>E</kbd>`;
+    const shopKey = isTouch ? `<kbd>🛒 GARAGE</kbd>` : `<kbd>E</kbd> or <kbd>TAB</kbd>`;
 
     if (this.world.isInsideAnyHideout(this.player.x, this.player.y, 12)) {
-      promptHTML = `Press <kbd>E</kbd> or <kbd>TAB</kbd> to Open Big Sal's Dumpster Garage!`;
+      promptHTML = `${isTouch ? 'Tap' : 'Press'} ${shopKey} to Open Big Sal's Dumpster Garage!`;
     } else {
       for (const g of this.world.graffitiSpots) {
         if (!g.tagged && Math.hypot(this.player.x - g.x, this.player.y - g.y) < 68) {
-          promptHTML = `Press <kbd>E</kbd> to Spray-Paint "${g.slogan}"!`;
+          promptHTML = `${isTouch ? 'Tap' : 'Press'} ${actKey} to Spray-Paint "${g.slogan}"!`;
           break;
         }
       }
       if (!promptHTML) {
         for (const p of this.world.props) {
           if (p.type === 'dumpster' && !p.looted && Math.hypot(this.player.x - p.x, this.player.y - p.y) < 66) {
-            promptHTML = `Press <kbd>E</kbd> to Rummage Dumpster for Shiny Loot!`;
+            promptHTML = `${isTouch ? 'Tap' : 'Press'} ${actKey} (or Ram!) to Raid Dumpster!`;
             break;
           }
         }

@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
   <title>CRIMOTHY: Grand Theft Possum</title>
   <link rel="stylesheet" href="styles.css" />
 </head>
@@ -108,7 +108,7 @@
       </div>
 
       <!-- Right: Quick Controls & Upgrade Button -->
-      <div class="controls-card">
+      <div class="controls-card" id="keyboard-controls-card">
         <div class="controls-grid">
           <div><kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd> Ride / Steer</div>
           <div><kbd>SPACE</kbd> Bunnyhop / Trick</div>
@@ -121,10 +121,55 @@
           <button id="btn-shop" class="arcade-btn shop-btn">
             🛒 DUMPSTER GARAGE (<kbd>TAB</kbd>)
           </button>
+          <button id="btn-input-mode" class="arcade-btn icon-btn" title="Detected Input Method (Click to Switch Touch / Keyboard)">
+            ⌨️ KB/M
+          </button>
           <button id="btn-mute" class="arcade-btn icon-btn" title="Toggle Sound">
             🔊
           </button>
         </div>
+      </div>
+    </div>
+
+    <!-- MOBILE / TOUCH CONTROLS OVERLAY -->
+    <div id="touch-controls" class="hidden">
+      <!-- Left: Virtual Analog Thumbstick -->
+      <div id="touch-joystick-zone">
+        <div id="joystick-base">
+          <div id="joystick-knob">🦝</div>
+        </div>
+        <div class="joystick-hint">DRAG TO RIDE & STEER</div>
+      </div>
+
+      <!-- Top-Center Mobile Utility Bar (Shop, Input Mode, Mute) -->
+      <div id="touch-utility-bar">
+        <button id="touch-btn-shop" class="arcade-btn shop-btn">🛒 GARAGE</button>
+        <button id="touch-btn-input" class="arcade-btn icon-btn">📱 TOUCH</button>
+        <button id="touch-btn-mute" class="arcade-btn icon-btn">🔊</button>
+      </div>
+
+      <!-- Right: Arcade Touch Action Cluster -->
+      <div id="touch-actions">
+        <button id="touch-btn-flip" class="touch-action-btn btn-flip">
+          <span class="t-icon">🌀</span>
+          <span class="t-label">FLIP</span>
+        </button>
+        <button id="touch-btn-dead" class="touch-action-btn btn-dead">
+          <span class="t-icon">💀</span>
+          <span class="t-label">PLAY DEAD</span>
+        </button>
+        <button id="touch-btn-crime" class="touch-action-btn btn-crime">
+          <span class="t-icon">🎨</span>
+          <span class="t-label">CRIME / TAG</span>
+        </button>
+        <button id="touch-btn-boost" class="touch-action-btn btn-boost">
+          <span class="t-icon">🚀</span>
+          <span class="t-label">BOOST</span>
+        </button>
+        <button id="touch-btn-jump" class="touch-action-btn btn-jump">
+          <span class="t-icon">🛴</span>
+          <span class="t-label">HOP / WHIP</span>
+        </button>
       </div>
     </div>
 
