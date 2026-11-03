@@ -133,15 +133,19 @@
 
     <!-- MOBILE / TOUCH CONTROLS OVERLAY -->
     <div id="touch-controls" class="hidden">
-      <!-- Left: Virtual Analog Thumbstick -->
+      <!-- Left: Full-Quadrant Touch Steering Zone & Virtual Analog Thumbstick -->
       <div id="touch-joystick-zone">
         <div id="joystick-base">
+          <span class="dpad-arrow dpad-up">▲</span>
+          <span class="dpad-arrow dpad-down">▼</span>
+          <span class="dpad-arrow dpad-left">◀</span>
+          <span class="dpad-arrow dpad-right">▶</span>
           <div id="joystick-knob">🦝</div>
         </div>
-        <div class="joystick-hint">DRAG TO RIDE & STEER</div>
+        <div class="joystick-hint">TOUCH & DRAG TO STEER</div>
       </div>
 
-      <!-- Top-Center Mobile Utility Bar (Shop, Input Mode, Mute) -->
+      <!-- Bottom-Center Mobile Utility Bar (Shop, Device Mode, Mute) -->
       <div id="touch-utility-bar">
         <button id="touch-btn-shop" class="arcade-btn shop-btn">🛒 GARAGE</button>
         <button id="touch-btn-input" class="arcade-btn icon-btn">📱 TOUCH</button>
@@ -226,6 +230,20 @@
           <span>💀 Play Dead to Fool Cops</span>
           <span>🚀 Upgrade Your Rig</span>
         </div>
+
+        <!-- DEVICE DETECTION & CONTROL MODE SELECTOR -->
+        <div class="device-detect-box">
+          <div id="detected-device-label">🔍 DETECTING DEVICE PLATFORM...</div>
+          <div class="device-mode-buttons">
+            <button id="title-mode-kb" class="mode-select-btn active">
+              🖥️ DESKTOP (KEYBOARD & MOUSE)
+            </button>
+            <button id="title-mode-touch" class="mode-select-btn">
+              📱 MOBILE / TABLET (TOUCH SCREEN)
+            </button>
+          </div>
+        </div>
+
         <button id="btn-start-game" class="arcade-btn start-btn">
           🛴 HIT THE STREETS!
         </button>

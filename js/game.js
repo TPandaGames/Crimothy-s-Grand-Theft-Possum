@@ -130,12 +130,62 @@ class Game {
   resize() {
     this.canvas.width = window.innerWidth;
     this.canvas.height = window.innerHeight;
+    if (!this.manualInputOverride) {
+      this.detectInitialInputMethod();
+    }
+  }
+
+  detectDevicePlatform() {
+    const ua = navigator.userAgent || '';
+    const isUAPhone = /Android.*Mobile|iPhone|iPod|BlackBerry|IEMobile|Opera Mini/i.test(ua);
+    const isUATablet = /iPad|Android(?!.*Mobile)|Tablet/i.test(ua) ||
+      (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+    const isUAMobileData = navigator.userAgentData ? navigator.userAgentData.mobile : false;
+    const isCoarsePointer = window.matchMedia ? window.matchMedia('(pointer: coarse)').matches : false;
+    const isNoHover = window.matchMedia ? window.matchMedia('(hover: none)').matches : false;
+    const hasTouch = ('ontouchstart' in window) || (navigator.maxTouchPoints > 0);
+
+    const isMobileOrTablet =
+      isUAPhone ||
+      isUATablet ||
+      isUAMobileData ||
+      (isCoarsePointer && isNoHover) ||
+      (hasTouch && window.innerWidth <= 920);
+
+    let platformName = 'Desktop (Keyboard & Mouse)';
+    if (isUAPhone || isUAMobileData) {
+      platformName = /iPhone|iPod/i.test(ua) ? 'iOS Mobile Phone' : 'Android / Mobile Phone';
+    } else if (isUATablet) {
+      platformName = 'Tablet (Touch Screen)';
+    } else if (isMobileOrTablet) {
+      platformName = 'Mobile / Touch Screen Device';
+    } else if (/Win/i.test(navigator.platform || ua)) {
+      platformName = hasTouch ? 'Windows Touchscreen PC (Keyboard + Touch)' : 'Windows Desktop PC';
+    } else if (/Mac/i.test(navigator.platform || ua)) {
+      platformName = 'macOS Desktop';
+    } else if (/Linux/i.test(navigator.platform || ua)) {
+      platformName = 'Linux Desktop';
+    }
+
+    return {
+      isMobileOrTablet,
+      hasTouch,
+      platformName
+    };
   }
 
   detectInitialInputMethod() {
-    const isCoarse = window.matchMedia && window.matchMedia('(pointer: coarse)').matches;
-    const hasTouch = ('ontouchstart' in window) || (navigator.maxTouchPoints > 0);
-    if (isCoarse || (hasTouch && window.innerWidth <= 1024)) {
+    const info = this.detectDevicePlatform();
+    this.deviceInfo = info;
+
+    const labelEl = document.getElementById('detected-device-label');
+    if (labelEl) {
+      labelEl.textContent = info.isMobileOrTablet
+        ? `📱 DETECTED: ${info.platformName.toUpperCase()} — TOUCH CONTROLS ACTIVE`
+        : `🖥️ DETECTED: ${info.platformName.toUpperCase()} — KEYBOARD & MOUSE ACTIVE`;
+    }
+
+    if (info.isMobileOrTablet) {
       this.setInputMethod('touch', false);
     } else {
       this.setInputMethod('keyboard', false);
@@ -145,9 +195,6 @@ class Game {
   setInputMethod(mode, isManual = false) {
     if (isManual) {
       this.manualInputOverride = true;
-    }
-    if (this.inputMethod === mode && document.body.classList.contains('input-touch') === (mode === 'touch')) {
-      return;
     }
     this.inputMethod = mode;
     const isTouch = mode === 'touch';
@@ -162,6 +209,14 @@ class Game {
     const touchBtn = document.getElementById('touch-btn-input');
     if (kbBtn) kbBtn.textContent = isTouch ? '📱 TOUCH' : '⌨️ KB/M';
     if (touchBtn) touchBtn.textContent = isTouch ? '📱 TOUCH' : '⌨️ KB/M';
+
+    // Update Title Screen Mode Selector buttons
+    const titleKb = document.getElementById('title-mode-kb');
+    const titleTouch = document.getElementById('title-mode-touch');
+    if (titleKb && titleTouch) {
+      titleKb.classList.toggle('active', !isTouch);
+      titleTouch.classList.toggle('active', isTouch);
+    }
   }
 
   bindEvents() {
@@ -200,6 +255,35 @@ class Game {
         this.setInputMethod('touch', false);
       }
     }, { passive: true });
+
+    // Listen for responsive mode / device media-query changes (e.g. DevTools mobile toggle)
+    if (window.matchMedia) {
+      const mq = window.matchMedia('(pointer: coarse)');
+      if (mq.addEventListener) {
+        mq.addEventListener('change', () => {
+          this.manualInputOverride = false;
+          this.detectInitialInputMethod();
+        });
+      }
+    }
+
+    // Title Screen Mode Selector buttons
+    const titleKbBtn = document.getElementById('title-mode-kb');
+    const titleTouchBtn = document.getElementById('title-mode-touch');
+    if (titleKbBtn) {
+      titleKbBtn.addEventListener('click', () => {
+        this.setInputMethod('keyboard', true);
+        const labelEl = document.getElementById('detected-device-label');
+        if (labelEl) labelEl.textContent = '🖥️ MODE SELECTED: DESKTOP (KEYBOARD & MOUSE)';
+      });
+    }
+    if (titleTouchBtn) {
+      titleTouchBtn.addEventListener('click', () => {
+        this.setInputMethod('touch', true);
+        const labelEl = document.getElementById('detected-device-label');
+        if (labelEl) labelEl.textContent = '📱 MODE SELECTED: MOBILE / TABLET (TOUCH SCREEN)';
+      });
+    }
 
     // Mouse buttons for quick tricks / action (only when in keyboard/mouse mode)
     this.canvas.addEventListener('mousedown', (e) => {
@@ -339,6 +423,47 @@ class Game {
     };
     joyZone.addEventListener('touchend', onJoyTouchEnd, { passive: false });
     joyZone.addEventListener('touchcancel', onJoyTouchEnd, { passive: false });
+
+    // Also allow touching & dragging ANYWHERE on the left half of the game canvas!
+    let canvasOriginX = 0;
+    let canvasOriginY = 0;
+    this.canvas.addEventListener('touchstart', (e) => {
+      if (this.paused) return;
+      for (let i = 0; i < e.changedTouches.length; i++) {
+        const t = e.changedTouches[i];
+        if (t.clientX < window.innerWidth * 0.5 && this.touchState.joyTouchId === null) {
+          e.preventDefault();
+          window.SFX.init();
+          this.touchState.joyTouchId = t.identifier;
+          canvasOriginX = t.clientX;
+          canvasOriginY = t.clientY;
+          break;
+        }
+      }
+    }, { passive: false });
+
+    this.canvas.addEventListener('touchmove', (e) => {
+      if (this.touchState.joyTouchId === null) return;
+      for (let i = 0; i < e.changedTouches.length; i++) {
+        const t = e.changedTouches[i];
+        if (t.identifier === this.touchState.joyTouchId) {
+          e.preventDefault();
+          const dx = t.clientX - canvasOriginX;
+          const dy = t.clientY - canvasOriginY;
+          const dist = Math.hypot(dx, dy);
+          const clamped = Math.min(maxRadius, dist);
+          const angle = Math.atan2(dy, dx);
+          joyKnob.style.transform = `translate(${Math.cos(angle) * clamped}px, ${Math.sin(angle) * clamped}px)`;
+          this.touchState.joyActive = true;
+          this.touchState.joyAngle = angle;
+          this.touchState.joyMag = clamped / maxRadius;
+          break;
+        }
+      }
+    }, { passive: false });
+
+    this.canvas.addEventListener('touchend', onJoyTouchEnd, { passive: false });
+    this.canvas.addEventListener('touchcancel', onJoyTouchEnd, { passive: false });
 
     // Also allow mouse dragging on the virtual joystick when testing Touch Mode on PC
     let mouseJoyDown = false;
@@ -826,12 +951,50 @@ class Game {
     ctx.stroke();
   }
 
+  pollGamepad() {
+    if (!navigator.getGamepads) return;
+    const pads = navigator.getGamepads();
+    const gp = pads && (pads[0] || pads[1] || pads[2] || pads[3]);
+    if (!gp) return;
+
+    const ax = gp.axes[0] || 0;
+    const ay = gp.axes[1] || 0;
+    const mag = Math.hypot(ax, ay);
+
+    if (mag > 0.22) {
+      this.touchState.joyActive = true;
+      this.touchState.joyAngle = Math.atan2(ay, ax);
+      this.touchState.joyMag = Math.min(1, mag);
+      this.gamepadSteering = true;
+    } else if (this.gamepadSteering) {
+      this.touchState.joyActive = false;
+      this.touchState.joyMag = 0;
+      this.gamepadSteering = false;
+    }
+
+    // Buttons: 0 = A/Cross (Hop/Whip), 1 = B/Circle (Boost), 2 = X/Square (Crime), 3 = Y/Triangle (Play Dead), 7 = RT (Boost)
+    const btnA = gp.buttons[0] && gp.buttons[0].pressed;
+    const btnB = (gp.buttons[1] && gp.buttons[1].pressed) || (gp.buttons[7] && gp.buttons[7].pressed);
+    const btnX = gp.buttons[2] && gp.buttons[2].pressed;
+    const btnY = gp.buttons[3] && gp.buttons[3].pressed;
+
+    if (btnA && !this.prevGpA) this.player.triggerBunnyHop(this.entities);
+    if (btnX && !this.prevGpX) this.player.performActionCrime(this.world, this.entities, this);
+    if (btnY && !this.prevGpY) this.player.togglePlayDead(this.entities, this);
+    this.touchState.boostPressed = !!btnB;
+
+    this.prevGpA = btnA;
+    this.prevGpX = btnX;
+    this.prevGpY = btnY;
+  }
+
   loop(now) {
     const dt = Math.min(0.05, (now - this.lastFrameTime) / 1000);
     this.lastFrameTime = now;
 
     if (!this.paused) {
       this.time += dt;
+      this.pollGamepad();
 
       // Update World, Player, and Entities
       this.world.update(dt);

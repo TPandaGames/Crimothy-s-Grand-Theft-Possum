@@ -792,6 +792,49 @@ kbd {
   font-weight: 800;
 }
 
+/* DEVICE DETECTION & MODE SELECTOR ON TITLE SCREEN */
+.device-detect-box {
+  background: #14171f;
+  border: 2px solid #373d4b;
+  border-radius: 12px;
+  padding: 10px 14px;
+  margin-bottom: 18px;
+}
+
+#detected-device-label {
+  font-size: 11px;
+  font-weight: 900;
+  color: #63e6be;
+  letter-spacing: 0.6px;
+  margin-bottom: 8px;
+}
+
+.device-mode-buttons {
+  display: flex;
+  gap: 8px;
+  justify-content: center;
+}
+
+.mode-select-btn {
+  flex: 1;
+  background: #232731;
+  border: 2px solid #495057;
+  color: #adb5bd;
+  border-radius: 8px;
+  padding: 7px 10px;
+  font-size: 11px;
+  font-weight: 900;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.mode-select-btn.active {
+  background: rgba(255, 212, 59, 0.18);
+  border-color: #ffd43b;
+  color: #ffd43b;
+  box-shadow: 0 0 12px rgba(255, 212, 59, 0.25);
+}
+
 /* =========================================================
    MOBILE / TOUCH CONTROLS & INPUT MODE ADAPTATION
    ========================================================= */
@@ -802,33 +845,48 @@ kbd {
   z-index: 25;
 }
 
-/* Left Virtual Analog Joystick */
+/* Left Virtual Analog Joystick (Generous bottom-left touch zone) */
 #touch-joystick-zone {
   position: absolute;
-  bottom: 22px;
-  left: 24px;
-  width: 156px;
-  height: 156px;
+  bottom: 0;
+  left: 0;
+  width: 42vw;
+  max-width: 300px;
+  height: 48vh;
+  max-height: 270px;
+  padding: 18px 24px;
   pointer-events: auto;
   display: flex;
   flex-direction: column;
-  align-items: center;
-  justify-content: center;
+  align-items: flex-start;
+  justify-content: flex-end;
   touch-action: none;
 }
 
 #joystick-base {
-  width: 132px;
-  height: 132px;
+  width: 136px;
+  height: 136px;
   border-radius: 50%;
-  background: radial-gradient(circle, rgba(35, 39, 49, 0.78) 0%, rgba(18, 20, 26, 0.9) 100%);
-  border: 3px solid rgba(255, 212, 59, 0.65);
-  box-shadow: 0 6px 16px rgba(0, 0, 0, 0.6), inset 0 0 18px rgba(0, 0, 0, 0.65);
+  background: radial-gradient(circle, rgba(35, 39, 49, 0.82) 0%, rgba(18, 20, 26, 0.94) 100%);
+  border: 3px solid rgba(255, 212, 59, 0.75);
+  box-shadow: 0 6px 16px rgba(0, 0, 0, 0.65), inset 0 0 18px rgba(0, 0, 0, 0.65);
   position: relative;
   display: flex;
   align-items: center;
   justify-content: center;
 }
+
+.dpad-arrow {
+  position: absolute;
+  font-size: 12px;
+  color: rgba(255, 212, 59, 0.42);
+  pointer-events: none;
+  font-weight: 900;
+}
+.dpad-up { top: 8px; left: 50%; transform: translateX(-50%); }
+.dpad-down { bottom: 8px; left: 50%; transform: translateX(-50%); }
+.dpad-left { left: 10px; top: 50%; transform: translateY(-50%); }
+.dpad-right { right: 10px; top: 50%; transform: translateY(-50%); }
 
 #joystick-knob {
   width: 56px;
