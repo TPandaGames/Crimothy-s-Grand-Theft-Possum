@@ -1,5 +1,5 @@
 // sw.js — Cross-Platform PWA Service Worker for CRIMOTHY: Grand Theft Possum
-const CACHE_NAME = 'crimothy-xplat-v3';
+const CACHE_NAME = 'crimothy-xplat-v4';
 const ASSETS = [
   './',
   './index.html',

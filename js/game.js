@@ -385,6 +385,8 @@ export class Game {
         this.network.sendEmote('🚨 COPS INCOMING!');
       } else if (e.code === 'Digit4') {
         this.network.sendEmote('🛴 SICK TRICK!');
+      } else if (e.code === 'KeyT') {
+        this.network.warpToPlayer();
       }
 
       if (this.player2) {
@@ -1020,16 +1022,32 @@ export class Game {
       ctx.fill();
     }
 
-    // Remote Multiplayer Peers on Minimap
+    // Remote Multiplayer Peers on Minimap (with pulsing beacon ring & name tag)
     if (this.network && this.network.connected) {
+      const pulse = 5.5 + Math.sin(this.time * 7) * 2.5;
       for (const rp of this.network.remotePlayers.values()) {
-        ctx.fillStyle = rp.role === 'cop' ? '#339af0' : (rp.color || '#15aabf');
-        ctx.strokeStyle = '#fff';
-        ctx.lineWidth = 1.2;
+        const mx = rp.x * scaleX;
+        const my = rp.y * scaleY;
+        const pCol = rp.role === 'cop' ? '#339af0' : (rp.color || '#15aabf');
+
+        ctx.strokeStyle = pCol;
+        ctx.lineWidth = 1.5;
         ctx.beginPath();
-        ctx.arc(rp.x * scaleX, rp.y * scaleY, 4.2, 0, Math.PI * 2);
+        ctx.arc(mx, my, pulse, 0, Math.PI * 2);
+        ctx.stroke();
+
+        ctx.fillStyle = pCol;
+        ctx.strokeStyle = '#fff';
+        ctx.lineWidth = 1.5;
+        ctx.beginPath();
+        ctx.arc(mx, my, 4.5, 0, Math.PI * 2);
         ctx.fill();
         ctx.stroke();
+
+        ctx.fillStyle = '#fff';
+        ctx.font = '900 8px sans-serif';
+        ctx.textAlign = 'center';
+        ctx.fillText((rp.name || 'P2').slice(0, 6), mx, my - 7);
       }
     }
 

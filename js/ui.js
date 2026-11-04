@@ -251,25 +251,46 @@ export class UIManager {
       hudRoster.innerHTML = board.map((p) => {
         const roleIcon = p.role === 'cop' ? '🚨' : '🦝';
         const metric = p.role === 'cop' ? `${p.busts} BUSTS` : `${p.infamy} 💀`;
+        const warpBtn = p.isLocal
+          ? ''
+          : `<button class="mp-mini-btn mp-warp-btn" data-warp-id="${p.id}" title="Teleport next to ${p.name} [T]">⚡ WARP</button>`;
         return `
           <div class="mp-roster-row" style="border-left-color: ${p.role === 'cop' ? '#339af0' : p.color}">
             <span class="mp-roster-name">${p.platformIcon} ${roleIcon} ${p.name}</span>
-            <span class="mp-roster-score">${metric} • ${p.hp}HP</span>
+            <span class="mp-roster-score">${metric} ${warpBtn}</span>
           </div>
         `;
       }).join('');
+
+      hudRoster.querySelectorAll('.mp-warp-btn').forEach((btn) => {
+        btn.addEventListener('click', (e) => {
+          e.stopPropagation();
+          net.warpToPlayer(btn.getAttribute('data-warp-id'));
+        });
+      });
     }
 
     if (modalRoster) {
       modalRoster.innerHTML = board.map((p) => {
         const roleIcon = p.role === 'cop' ? '🚨 COP' : '🦝 POSSUM';
+        const warpBtn = p.isLocal
+          ? `<span style="color:#ffd43b;">${roleIcon}</span>`
+          : `<button class="mp-mini-btn mp-warp-btn" data-warp-id="${p.id}">⚡ WARP TO ${roleIcon}</button>`;
         return `
           <div class="mp-player-pill" style="border-color: ${p.role === 'cop' ? '#339af0' : p.color}">
             <span>${p.platformIcon} ${p.name}</span>
-            <span style="color:#ffd43b;">${roleIcon}</span>
+            ${warpBtn}
           </div>
         `;
       }).join('');
+
+      modalRoster.querySelectorAll('.mp-warp-btn').forEach((btn) => {
+        btn.addEventListener('click', (e) => {
+          e.stopPropagation();
+          if (this.game.mpModalOpen) this.game.toggleMpModal();
+          net.warpToPlayer(btn.getAttribute('data-warp-id'));
+        });
+      });
     }
   }
 
