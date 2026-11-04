@@ -311,13 +311,15 @@ export class Player {
         if (keys['ArrowLeft']) this.angle -= turnSpeed * dt;
         if (keys['ArrowRight']) this.angle += turnSpeed * dt;
       } else {
-        if (keys['KeyA'] || keys['ArrowLeft']) this.angle -= turnSpeed * dt;
-        if (keys['KeyD'] || keys['ArrowRight']) this.angle += turnSpeed * dt;
+        if (keys['KeyA'] || (!game.player2 && keys['ArrowLeft'])) this.angle -= turnSpeed * dt;
+        if (keys['KeyD'] || (!game.player2 && keys['ArrowRight'])) this.angle += turnSpeed * dt;
       }
     }
 
     // Rocket Boost (Shift or Touch Boost Button)
-    const boostKey = this.isPlayer2 ? keys['ShiftRight'] : (keys['ShiftLeft'] || keys['ShiftRight']);
+    const boostKey = this.isPlayer2
+      ? (keys['ShiftRight'] || keys['Slash'])
+      : (keys['ShiftLeft'] || (!game.player2 && keys['ShiftRight']));
     if ((boostKey || (touch.boostPressed && !this.isPlayer2)) && this.boost > 5) {
       this.boostActive = true;
       const drain = Math.max(12, 26 - this.upgrades.rocket * 5);

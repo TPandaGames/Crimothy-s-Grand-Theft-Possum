@@ -34,14 +34,14 @@ export class UIManager {
     const titleNameInput = document.getElementById('title-mp-name');
     if (mpNameInput) {
       mpNameInput.value = net.playerName;
-      mpNameInput.addEventListener('change', () => {
+      mpNameInput.addEventListener('input', () => {
         net.setProfile({ name: mpNameInput.value });
         if (titleNameInput) titleNameInput.value = net.playerName;
       });
     }
     if (titleNameInput) {
       titleNameInput.value = net.playerName;
-      titleNameInput.addEventListener('change', () => {
+      titleNameInput.addEventListener('input', () => {
         net.setProfile({ name: titleNameInput.value });
         if (mpNameInput) mpNameInput.value = net.playerName;
       });
@@ -109,23 +109,22 @@ export class UIManager {
 
     const handleHost = () => {
       this.game.sfx.upgradeBuy();
-      const custom = (mpRoomInput && mpRoomInput.value) || (titleRoomInput && titleRoomInput.value) || '';
-      const code = net.hostRoom(custom);
+      const code = net.hostRoom();
       if (mpRoomInput) mpRoomInput.value = code;
       if (titleRoomInput) titleRoomInput.value = code;
     };
 
     const handleJoin = (inputEl) => {
-      const code = inputEl ? inputEl.value : '';
-      if (!code.trim()) {
+      const code = inputEl ? inputEl.value.trim() : '';
+      if (!code) {
         // If empty, host a new room automatically so 1 click always gets them online!
         handleHost();
         return;
       }
       this.game.sfx.shinyPickup();
-      net.joinRoom(code);
-      if (mpRoomInput) mpRoomInput.value = net.roomCode;
-      if (titleRoomInput) titleRoomInput.value = net.roomCode;
+      const joined = net.joinRoom(code);
+      if (mpRoomInput) mpRoomInput.value = joined;
+      if (titleRoomInput) titleRoomInput.value = joined;
     };
 
     const btnHost = document.getElementById('btn-mp-host');

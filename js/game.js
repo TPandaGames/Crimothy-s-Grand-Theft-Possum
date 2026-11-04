@@ -388,12 +388,12 @@ export class Game {
       }
 
       if (this.player2) {
-        if (e.code === 'Numpad0') {
+        if (e.code === 'Numpad0' || e.code === 'Enter') {
           e.preventDefault();
           this.player2.triggerBunnyHop(this.entities);
-        } else if (e.code === 'Numpad1') {
+        } else if (e.code === 'Numpad1' || e.code === 'Comma') {
           this.player2.togglePlayDead(this.entities, this);
-        } else if (e.code === 'Numpad2') {
+        } else if (e.code === 'Numpad2' || e.code === 'Period') {
           this.player2.performActionCrime(this.world, this.entities, this);
         }
       }
@@ -485,13 +485,20 @@ export class Game {
         this.player2 = null;
       }
 
-      if (this.selectedPlayMode === 'online' && !this.network.connected) {
+      if (this.selectedPlayMode === 'online') {
         const codeInput = document.getElementById('title-mp-code');
-        const enteredCode = codeInput ? codeInput.value.trim() : '';
-        if (enteredCode) {
-          this.network.joinRoom(enteredCode);
+        const modalInput = document.getElementById('mp-room-input');
+        const enteredCode = codeInput ? codeInput.value.trim().toUpperCase() : '';
+        if (enteredCode && (!this.network.connected || this.network.roomCode !== enteredCode)) {
+          const joined = this.network.joinRoom(enteredCode);
+          if (codeInput) codeInput.value = joined;
+          if (modalInput) modalInput.value = joined;
+        } else if (!this.network.connected) {
+          const hosted = this.network.hostRoom();
+          if (codeInput) codeInput.value = hosted;
+          if (modalInput) modalInput.value = hosted;
         } else {
-          this.network.hostRoom();
+          this.network.sendHello();
         }
       }
 

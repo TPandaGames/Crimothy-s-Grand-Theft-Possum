@@ -1,5 +1,5 @@
 // sw.js — Cross-Platform PWA Service Worker for CRIMOTHY: Grand Theft Possum
-const CACHE_NAME = 'crimothy-xplat-v2';
+const CACHE_NAME = 'crimothy-xplat-v3';
 const ASSETS = [
   './',
   './index.html',
@@ -35,14 +35,18 @@ self.addEventListener('activate', (event) => {
 
 self.addEventListener('fetch', (event) => {
   if (event.request.method !== 'GET') return;
+  const url = new URL(event.request.url);
+  if (url.origin !== self.location.origin) return;
+
   event.respondWith(
     fetch(event.request)
       .then((res) => {
-        const copy = res.clone();
-        caches.open(CACHE_NAME).then((cache) => cache.put(event.request, copy)).catch(() => {});
+        if (res && res.status === 200) {
+          const copy = res.clone();
+          caches.open(CACHE_NAME).then((cache) => cache.put(event.request, copy)).catch(() => {});
+        }
         return res;
       })
       .catch(() => caches.match(event.request))
   );
 });
-

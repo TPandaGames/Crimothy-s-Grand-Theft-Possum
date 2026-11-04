@@ -27,7 +27,7 @@ export class NetworkManager {
   constructor(game) {
     this.game = game;
 
-    this.localId = 'p_' + Math.random().toString(36).substring(2, 9);
+    this.localId = 'p' + Math.random().toString(36).substring(2, 9);
     this.playerName = localStorage.getItem('crimothy_name') || `POSSUM-${Math.floor(100 + Math.random() * 899)}`;
     this.playerColor = localStorage.getItem('crimothy_color') || '#e03131';
     this.playerRole = 'possum'; // 'possum' | 'cop'
@@ -44,6 +44,8 @@ export class NetworkManager {
     // WebRTC PeerJS instance & connections map (peerId -> DataConnection)
     this.peer = null;
     this.connections = new Map();
+    this.reconnectTimer = null;
+    this.peerLoadTimer = null;
 
     // Local BroadcastChannel for instant zero-config multi-tab / same-device testing
     this.bc = null;
@@ -113,23 +115,43 @@ export class NetworkManager {
     this.game.ui.updateMultiplayerUI();
   }
 
-  async hostRoom(customCode = '') {
+  applySpawnOffset() {
+    // Give each online player a unique offset around the starting Hideout so players don't stack on 1 pixel
+    let hash = 0;
+    for (let i = 0; i < this.localId.length; i++) {
+      hash = (hash * 31 + this.localId.charCodeAt(i)) & 0xffff;
+    }
+    const ang = (hash % 360) * (Math.PI / 180);
+    const dist = 28 + (hash % 24);
+    const p = this.game.player;
+    if (p && Math.hypot(p.x - this.game.world.hideout.x, p.y - this.game.world.hideout.y) < 65) {
+      p.x = this.game.world.hideout.x + Math.cos(ang) * dist;
+      p.y = this.game.world.hideout.y + Math.sin(ang) * dist;
+      p.spawnX = p.x;
+      p.spawnY = p.y;
+    }
+  }
+
+  hostRoom(customCode = '') {
     this.disconnect();
-    this.roomCode = (customCode.trim().toUpperCase().replace(/[^A-Z0-9]/g, '') || this.generateRoomCode()).slice(0, 8);
+    const cleaned = (customCode || '').trim().toUpperCase().replace(/[^A-Z0-9]/g, '');
+    this.roomCode = (cleaned || this.generateRoomCode()).slice(0, 8);
     this.isHost = true;
     this.connected = true;
     this.statusText = `HOSTING ROOM: ${this.roomCode}`;
 
+    this.applySpawnOffset();
     this.setupBroadcastChannel(this.roomCode);
     this.setupPeerJS(this.roomCode, true);
+    this.sendHello();
 
     this.game.ui.updateMultiplayerUI();
     return this.roomCode;
   }
 
-  async joinRoom(code) {
+  joinRoom(code) {
     const clean = (code || '').trim().toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 8);
-    if (!clean) return false;
+    if (!clean) return '';
 
     this.disconnect();
     this.roomCode = clean;
@@ -137,16 +159,25 @@ export class NetworkManager {
     this.connected = true;
     this.statusText = `CONNECTING TO ${this.roomCode}...`;
 
+    this.applySpawnOffset();
     this.setupBroadcastChannel(this.roomCode);
     this.setupPeerJS(this.roomCode, false);
 
     // Send immediate hello on BroadcastChannel in case Host is on same browser/device
     this.sendHello();
     this.game.ui.updateMultiplayerUI();
-    return true;
+    return this.roomCode;
   }
 
   disconnect() {
+    if (this.reconnectTimer) {
+      clearInterval(this.reconnectTimer);
+      this.reconnectTimer = null;
+    }
+    if (this.peerLoadTimer) {
+      clearTimeout(this.peerLoadTimer);
+      this.peerLoadTimer = null;
+    }
     if (this.connected) {
       this.broadcastRaw({
         type: 'leave',
@@ -154,7 +185,7 @@ export class NetworkManager {
       });
     }
     if (this.bc) {
-      this.bc.close();
+      try { this.bc.close(); } catch (_) {}
       this.bc = null;
     }
     for (const conn of this.connections.values()) {
@@ -183,19 +214,26 @@ export class NetworkManager {
         }
       };
       if (this.isHost) {
-        this.statusText = `LIVE ROOM: ${this.roomCode} (P2P + LOCAL)`;
+        this.statusText = `LIVE ROOM: ${this.roomCode} (READY)`;
       } else {
-        this.statusText = `CONNECTED TO ${this.roomCode}`;
+        this.statusText = `IN ROOM: ${this.roomCode}`;
       }
     } catch (_) {}
   }
 
-  setupPeerJS(roomCode, asHost) {
+  setupPeerJS(roomCode, asHost, retryCount = 0) {
     const PeerClass = window.Peer;
     if (!PeerClass) {
-      // BroadcastChannel still works for local multi-tab even if offline/no CDN
-      this.statusText = `ROOM: ${roomCode} (LOCAL LAN/TAB MODE)`;
-      this.game.ui.updateMultiplayerUI();
+      if (retryCount < 15) {
+        this.peerLoadTimer = setTimeout(() => {
+          if (this.connected && this.roomCode === roomCode) {
+            this.setupPeerJS(roomCode, asHost, retryCount + 1);
+          }
+        }, 300);
+      } else {
+        this.statusText = `ROOM: ${roomCode} (LOCAL LAN/TAB MODE)`;
+        this.game.ui.updateMultiplayerUI();
+      }
       return;
     }
 
@@ -203,17 +241,34 @@ export class NetworkManager {
     const myPeerId = asHost ? hostPeerId : `${PEER_PREFIX}${roomCode}-${this.localId}`;
 
     try {
+      if (this.peer) {
+        try { this.peer.destroy(); } catch (_) {}
+      }
+
       this.peer = new PeerClass(myPeerId, {
         debug: 0
       });
 
       this.peer.on('open', () => {
+        if (!this.connected || this.roomCode !== roomCode) return;
         if (asHost) {
-          this.statusText = `HOSTING: ${roomCode} (CROSS-PLATFORM P2P READY)`;
+          this.statusText = `HOSTING: ${roomCode} (${this.getPlayerCount()}P ONLINE)`;
           this.game.ui.updateMultiplayerUI();
         } else {
-          const conn = this.peer.connect(hostPeerId, { reliable: false });
-          this.registerPeerConnection(conn);
+          this.connectToHostPeer(hostPeerId);
+          // Auto-retry connecting to host peer every 2.5s if not yet connected over WebRTC
+          if (this.reconnectTimer) clearInterval(this.reconnectTimer);
+          this.reconnectTimer = setInterval(() => {
+            if (!this.connected || this.isHost) {
+              clearInterval(this.reconnectTimer);
+              this.reconnectTimer = null;
+              return;
+            }
+            const existing = this.connections.get(hostPeerId);
+            if (!existing || !existing.open) {
+              this.connectToHostPeer(hostPeerId);
+            }
+          }, 2500);
         }
       });
 
@@ -225,14 +280,15 @@ export class NetworkManager {
         // If room ID is already taken on PeerServer when user clicked Host, seamlessly join it instead!
         if (asHost && err && err.type === 'unavailable-id') {
           this.isHost = false;
-          this.statusText = `JOINING EXISTING ROOM ${roomCode}...`;
+          this.statusText = `JOINING ROOM ${roomCode}...`;
           try { this.peer.destroy(); } catch (_) {}
+          this.peer = null;
           this.setupPeerJS(roomCode, false);
           return;
         }
-        // Keep BroadcastChannel active if PeerServer is unreachable
+        // Keep BroadcastChannel active and update UI
         if (this.connected) {
-          this.statusText = `ROOM ${roomCode} ACTIVE`;
+          this.statusText = `${this.isHost ? 'HOSTING' : 'IN ROOM'}: ${this.roomCode} (${this.getPlayerCount()}P)`;
           this.game.ui.updateMultiplayerUI();
         }
       });
@@ -242,16 +298,34 @@ export class NetworkManager {
     }
   }
 
+  connectToHostPeer(hostPeerId) {
+    if (!this.peer || this.peer.destroyed || !this.peer.open) return;
+    try {
+      const conn = this.peer.connect(hostPeerId);
+      if (conn) {
+        this.registerPeerConnection(conn);
+      }
+    } catch (_) {}
+  }
+
   registerPeerConnection(conn) {
-    conn.on('open', () => {
+    if (!conn) return;
+
+    const onOpen = () => {
       this.connections.set(conn.peer, conn);
       this.statusText = `${this.isHost ? 'HOSTING' : 'IN ROOM'}: ${this.roomCode} (${this.getPlayerCount()}P ONLINE)`;
-      this.sendHello(conn);
+      this.sendHello(conn, false);
       if (this.isHost) {
         this.sendWorldSnapshot(conn);
       }
       this.game.ui.updateMultiplayerUI();
-    });
+    };
+
+    if (conn.open) {
+      onOpen();
+    } else {
+      conn.on('open', onOpen);
+    }
 
     conn.on('data', (data) => {
       this.handleIncomingPacket(data, conn);
@@ -261,11 +335,17 @@ export class NetworkManager {
       this.connections.delete(conn.peer);
       this.game.ui.updateMultiplayerUI();
     });
+
+    conn.on('error', () => {
+      this.connections.delete(conn.peer);
+    });
   }
 
-  sendHello(targetConn = null) {
+  sendHello(targetConn = null, isReply = false) {
+    const p = this.game.player;
     const pkt = {
       type: 'hello',
+      isReply,
       senderId: this.localId,
       name: this.playerName,
       color: this.playerColor,
@@ -273,10 +353,12 @@ export class NetworkManager {
       copVehicle: this.copVehicle,
       platformIcon: this.getPlatformShortIcon(),
       platformName: this.getPlatformName(),
-      gameMode: this.gameMode
+      gameMode: this.gameMode,
+      x: p ? Math.round(p.x) : 400,
+      y: p ? Math.round(p.y) : 400
     };
     if (targetConn && targetConn.open) {
-      targetConn.send(pkt);
+      try { targetConn.send(pkt); } catch (_) {}
     } else {
       this.broadcastRaw(pkt);
     }
@@ -303,7 +385,7 @@ export class NetworkManager {
       taggedIndices
     };
     if (targetConn && targetConn.open) {
-      targetConn.send(pkt);
+      try { targetConn.send(pkt); } catch (_) {}
     } else {
       this.broadcastRaw(pkt);
     }
@@ -356,18 +438,35 @@ export class NetworkManager {
     }
 
     if (data.type === 'hello') {
-      this.ensureRemotePlayer(data.senderId, data);
+      const isNewPeer = !this.remotePlayers.has(data.senderId);
+      const rp = this.ensureRemotePlayer(data.senderId, data);
+      if (typeof data.x === 'number' && typeof data.y === 'number') {
+        rp.x = data.x;
+        rp.y = data.y;
+        rp.targetX = data.x;
+        rp.targetY = data.y;
+      }
+
+      // Reply with our own hello so the joining peer immediately adds us to their roster!
+      if (!data.isReply) {
+        this.sendHello(sourceConn, true);
+      }
       if (this.isHost) {
         this.sendWorldSnapshot(sourceConn);
       }
-      this.game.entities.addFloatingText(
-        this.game.player.x,
-        this.game.player.y - 50,
-        `${data.platformIcon || '🌐'} ${data.name} JOINED THE STREETS!`,
-        '#63e6be',
-        16
-      );
-      this.addCrimeToast(`${data.platformIcon || '🌐'} ${data.name} joined (${data.role === 'cop' ? '🚨 COP' : '🦝 POSSUM'})`);
+
+      this.statusText = `${this.isHost ? 'HOSTING' : 'IN ROOM'}: ${this.roomCode} (${this.getPlayerCount()}P ONLINE)`;
+
+      if (isNewPeer) {
+        this.game.entities.addFloatingText(
+          this.game.player.x,
+          this.game.player.y - 50,
+          `${data.platformIcon || '🌐'} ${data.name} JOINED THE STREETS!`,
+          '#63e6be',
+          16
+        );
+        this.addCrimeToast(`${data.platformIcon || '🌐'} ${data.name} joined (${data.role === 'cop' ? '🚨 COP' : '🦝 POSSUM'})`);
+      }
       this.game.ui.updateMultiplayerUI();
       return;
     }
@@ -377,6 +476,7 @@ export class NetworkManager {
       if (rp) {
         this.addCrimeToast(`👋 ${rp.name} left the room`);
         this.remotePlayers.delete(data.senderId);
+        this.statusText = `${this.isHost ? 'HOSTING' : 'IN ROOM'}: ${this.roomCode} (${this.getPlayerCount()}P ONLINE)`;
         this.game.ui.updateMultiplayerUI();
       }
       return;
@@ -414,7 +514,12 @@ export class NetworkManager {
     }
 
     if (data.type === 'state') {
+      const isNew = !this.remotePlayers.has(data.senderId);
       const rp = this.ensureRemotePlayer(data.senderId, data);
+      if (isNew && typeof data.x === 'number' && typeof data.y === 'number') {
+        rp.x = data.x;
+        rp.y = data.y;
+      }
       rp.targetX = data.x;
       rp.targetY = data.y;
       rp.vx = data.vx || 0;
@@ -494,6 +599,7 @@ export class NetworkManager {
         lastSeen: performance.now()
       };
       this.remotePlayers.set(id, rp);
+      this.statusText = `${this.isHost ? 'HOSTING' : 'IN ROOM'}: ${this.roomCode} (${this.getPlayerCount()}P ONLINE)`;
       this.game.ui.updateMultiplayerUI();
     }
     return rp;
@@ -703,9 +809,10 @@ export class NetworkManager {
 
     // 1. Interpolate Remote Players & Check PvP / Co-op Collisions
     for (const [id, rp] of this.remotePlayers.entries()) {
-      // Remove stale peers after 12 seconds of silence
-      if (now - rp.lastSeen > 12000) {
+      // Remove stale peers after 15 seconds of silence
+      if (now - rp.lastSeen > 15000) {
         this.remotePlayers.delete(id);
+        this.statusText = `${this.isHost ? 'HOSTING' : 'IN ROOM'}: ${this.roomCode} (${this.getPlayerCount()}P ONLINE)`;
         this.game.ui.updateMultiplayerUI();
         continue;
       }
@@ -801,6 +908,12 @@ export class NetworkManager {
   }
 
   drawRemotePlayers(ctx, time) {
+    const cam = this.game.camera;
+    const viewX1 = cam.x;
+    const viewY1 = cam.y;
+    const viewX2 = cam.x + cam.viewW;
+    const viewY2 = cam.y + cam.viewH;
+
     for (const rp of this.remotePlayers.values()) {
       ctx.save();
       ctx.translate(rp.x, rp.y);
@@ -848,6 +961,37 @@ export class NetworkManager {
 
       ctx.restore();
       ctx.restore();
+
+      // If Remote Player is off-screen, draw an edge-of-screen directional pointer so players can find each other!
+      if (rp.x < viewX1 + 20 || rp.x > viewX2 - 20 || rp.y < viewY1 + 20 || rp.y > viewY2 - 20) {
+        const cx = viewX1 + cam.viewW / 2;
+        const cy = viewY1 + cam.viewH / 2;
+        const ang = Math.atan2(rp.y - cy, rp.x - cx);
+        const distM = Math.round(Math.hypot(rp.x - this.game.player.x, rp.y - this.game.player.y) / 10);
+        const pad = 48;
+        const px = Math.max(viewX1 + pad, Math.min(viewX2 - pad, cx + Math.cos(ang) * (cam.viewW * 0.42)));
+        const py = Math.max(viewY1 + pad + 50, Math.min(viewY2 - pad - 40, cy + Math.sin(ang) * (cam.viewH * 0.40)));
+
+        ctx.save();
+        ctx.translate(px, py);
+        ctx.fillStyle = 'rgba(15, 18, 24, 0.9)';
+        ctx.strokeStyle = rp.role === 'cop' ? '#339af0' : (rp.color || '#63e6be');
+        ctx.lineWidth = 2.5;
+        ctx.beginPath();
+        ctx.arc(0, 0, 18, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.stroke();
+
+        ctx.font = "900 12px 'Segoe UI', sans-serif";
+        ctx.textAlign = 'center';
+        ctx.fillStyle = '#fff';
+        ctx.fillText(rp.role === 'cop' ? '🚨' : '🦝', 0, 4);
+
+        ctx.fillStyle = '#ffd43b';
+        ctx.font = "900 10px 'Segoe UI', sans-serif";
+        ctx.fillText(`${rp.name} (${distM}m)`, 0, 30);
+        ctx.restore();
+      }
     }
   }
 
@@ -1045,4 +1189,3 @@ export class NetworkManager {
     ctx.restore();
   }
 }
-
