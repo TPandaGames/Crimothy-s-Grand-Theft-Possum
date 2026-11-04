@@ -1,6 +1,9 @@
 // js/entities.js — Pedestrians, Animal Control Authorities, Loot Drops, Particles & Floating Text
 
-class EntityManager {
+import { SFX } from './audio.js';
+import { ObjectPool } from './pool.js';
+
+export class EntityManager {
   constructor(world) {
     this.world = world;
     this.pedestrians = [];
@@ -9,6 +12,10 @@ class EntityManager {
     this.particles = [];
     this.floatingTexts = [];
     this.nets = []; // flying capture nets from higher-tier Animal Control
+
+    this.particlePool = new ObjectPool(() => ({ x: 0, y: 0, vx: 0, vy: 0, color: '', size: 0, life: 0, maxLife: 0 }), 200);
+    this.floatingTextPool = new ObjectPool(() => ({ x: 0, y: 0, text: '', color: '', size: 0, vy: 0, life: 0, maxLife: 0 }), 50);
+    this.lootPool = new ObjectPool(() => ({ x: 0, y: 0, vx: 0, vy: 0, value: 0, icon: '', life: 0, bob: 0 }), 50);
 
     this.pedQuotesRobbed = [
       "MY ARTISANAL PIZZA!!",
@@ -87,15 +94,7 @@ class EntityManager {
     for (let i = 0; i < count; i++) {
       const ang = Math.random() * Math.PI * 2;
       const spd = 65 + Math.random() * 110;
-      this.loot.push({
-        x, y,
-        vx: Math.cos(ang) * spd,
-        vy: Math.sin(ang) * spd,
-        value: baseValue + Math.floor(Math.random() * 5),
-        icon: icons[Math.floor(Math.random() * icons.length)],
-        life: 18.0,
-        bob: Math.random() * Math.PI * 2
-      });
+      const l = this.lootPool.get(); l.x = x; l.y = y; l.vx = Math.cos(ang) * spd; l.vy = Math.sin(ang) * spd; l.value = baseValue + Math.floor(Math.random() * 5); l.icon = icons[Math.floor(Math.random() * icons.length)]; l.life = 18.0; l.bob = Math.random() * Math.PI * 2; this.loot.push(l);
     }
   }
 
@@ -103,29 +102,12 @@ class EntityManager {
     for (let i = 0; i < count; i++) {
       const ang = Math.random() * Math.PI * 2;
       const spd = (0.3 + Math.random() * 0.8) * speed;
-      this.particles.push({
-        x, y,
-        vx: Math.cos(ang) * spd,
-        vy: Math.sin(ang) * spd,
-        color,
-        size: size * (0.6 + Math.random() * 0.7),
-        life: 0.4 + Math.random() * 0.45,
-        maxLife: 0.85
-      });
+      const p = this.particlePool.get(); p.x = x; p.y = y; p.vx = Math.cos(ang) * spd; p.vy = Math.sin(ang) * spd; p.color = color; p.size = size * (0.6 + Math.random() * 0.7); p.life = 0.4 + Math.random() * 0.45; p.maxLife = 0.85; this.particles.push(p);
     }
   }
 
   addFloatingText(x, y, text, color = "#ffd43b", size = 16) {
-    this.floatingTexts.push({
-      x,
-      y,
-      text,
-      color,
-      size,
-      vy: -52,
-      life: 1.25,
-      maxLife: 1.25
-    });
+    const ft = this.floatingTextPool.get(); ft.x = x; ft.y = y; ft.text = text; ft.color = color; ft.size = size; ft.vy = -52; ft.life = 1.25; ft.maxLife = 1.25; this.floatingTexts.push(ft);
   }
 
   // Spawn Animal Control units matching current Wanted Level
@@ -198,9 +180,8 @@ class EntityManager {
     });
   }
 
-  update(dt, player, game) {
+  update(dt, players, game) {
     // 1. Update Loot Drops
-    const magnetRadius = player.getMagnetRadius();
     for (let i = this.loot.length - 1; i >= 0; i--) {
       const l = this.loot[i];
       l.life -= dt;
@@ -210,25 +191,36 @@ class EntityManager {
       l.vx *= 0.9;
       l.vy *= 0.9;
 
-      const dx = player.x - l.x;
-      const dy = player.y - l.y;
-      const dist = Math.hypot(dx, dy);
-
-      if (dist < magnetRadius) {
-        const pull = (1 - dist / magnetRadius) * 440 + 180;
-        l.x += (dx / dist) * pull * dt;
-        l.y += (dy / dist) * pull * dt;
+      let closestPlayer = null;
+      let closestDist = Infinity;
+      for (const player of players) {
+        const dist = Math.hypot(player.x - l.x, player.y - l.y);
+        if (dist < closestDist) {
+          closestDist = dist;
+          closestPlayer = player;
+        }
       }
 
-      if (dist < player.r + 16) {
-        game.addShinies(l.value, l.x, l.y, l.icon);
-        window.SFX.shinyPickup();
-        this.loot.splice(i, 1);
-        continue;
+      if (closestPlayer) {
+        const magnetRadius = closestPlayer.getMagnetRadius();
+        const dx = closestPlayer.x - l.x;
+        const dy = closestPlayer.y - l.y;
+        if (closestDist < magnetRadius) {
+          const pull = (1 - closestDist / magnetRadius) * 440 + 180;
+          l.x += (dx / closestDist) * pull * dt;
+          l.y += (dy / closestDist) * pull * dt;
+        }
+
+        if (closestDist < closestPlayer.r + 16) {
+          game.addShinies(l.value, l.x, l.y, l.icon);
+          SFX.shinyPickup();
+          this.lootPool.release(this.loot[i]); this.loot.splice(i, 1);
+          continue;
+        }
       }
 
       if (l.life <= 0) {
-        this.loot.splice(i, 1);
+        this.lootPool.release(this.loot[i]); this.loot.splice(i, 1);
       }
     }
 
@@ -260,17 +252,18 @@ class EntityManager {
       }
 
       // Check auto-snatch if player rides close by
-      const distToPlayer = Math.hypot(player.x - p.x, player.y - p.y);
-      const snatchReach = player.r + p.r + (player.upgrades.magnet * 14) + 12;
-      if (p.hasItem && !player.isPlayingDead && distToPlayer < snatchReach && player.speed > 75) {
-        this.snatchFromPedestrian(p, player, game);
+      for (const player of players) {
+        const distToPlayer = Math.hypot(player.x - p.x, player.y - p.y);
+        const snatchReach = player.r + p.r + (player.upgrades.magnet * 14) + 12;
+        if (p.hasItem && !player.isPlayingDead && distToPlayer < snatchReach && player.speed > 75) {
+          this.snatchFromPedestrian(p, player, game);
+          break;
+        }
       }
     }
 
     // 3. Update Authorities (Animal Control)
-    this.maintainAuthorities(game.wantedLevel, player);
-
-    const inSafeHideout = !!this.world.isInsideAnyHideout(player.x, player.y);
+    this.maintainAuthorities(game.wantedLevel, players[0]);
 
     for (let i = this.authorities.length - 1; i >= 0; i--) {
       const cop = this.authorities[i];
@@ -281,9 +274,24 @@ class EntityManager {
         continue;
       }
 
+      let closestPlayer = null;
+      let closestDist = Infinity;
+      for (const player of players) {
+        if (player.role === 'cop') continue;
+        const dist = Math.hypot(player.x - cop.x, player.y - cop.y);
+        if (dist < closestDist) {
+          closestDist = dist;
+          closestPlayer = player;
+        }
+      }
+
+      if (!closestPlayer) continue;
+      const player = closestPlayer;
+      const inSafeHideout = !!this.world.isInsideAnyHideout(player.x, player.y);
+
       const dx = player.x - cop.x;
       const dy = player.y - cop.y;
-      const dist = Math.hypot(dx, dy);
+      const dist = closestDist;
 
       // Check if player is Playing Dead or inside Safe Hideout!
       const foolDistance = cop.type === 'k9'
@@ -304,7 +312,7 @@ class EntityManager {
           cop.inspectQuoteSent = true;
           cop.confusedTimer = 3.0;
           const q = this.copQuotesInspect[Math.floor(Math.random() * this.copQuotesInspect.length)];
-          this.addFloatingText(cop.x, cop.y - 24, `❓ "${q}"`, "#74c0fc", 13);
+          const ft = this.floatingTextPool.get(); ft.x = cop.x; ft.y = cop.y - 24; ft.text = `❓ "${q}"`; ft.color = "#74c0fc"; ft.size = 13; ft.vy = -52; ft.life = 1.25; ft.maxLife = 1.25; this.floatingTexts.push(ft);
           // Drain heat bonus when fooling a cop!
           game.reduceHeat(18 + player.upgrades.acting * 8);
         }
@@ -345,7 +353,7 @@ class EntityManager {
         if (prop.type === 'hydrant' && prop.smashed && prop.geyserTimer > 0) {
           if (Math.hypot(cop.x - prop.x, cop.y - prop.y) < 34) {
             cop.blindedTimer = 2.0;
-            this.addFloatingText(cop.x, cop.y - 20, "💦 BLASTED!", "#4dabf7", 14);
+            const ft = this.floatingTextPool.get(); ft.x = cop.x; ft.y = cop.y - 20; ft.text = "💦 BLASTED!"; ft.color = "#4dabf7"; ft.size = 14; ft.vy = -52; ft.life = 1.25; ft.maxLife = 1.25; this.floatingTexts.push(ft);
           }
         }
       }
@@ -374,8 +382,8 @@ class EntityManager {
           cop.x -= Math.cos(targetAngle) * 55;
           cop.y -= Math.sin(targetAngle) * 55;
           this.addParticles(cop.x, cop.y, "#ffd43b", 12, 160);
-          this.addFloatingText(cop.x, cop.y - 20, "💥 BOWLED OVER!", "#ffa94d", 15);
-          window.SFX.trashCrash();
+          const ft = this.floatingTextPool.get(); ft.x = cop.x; ft.y = cop.y - 20; ft.text = "💥 BOWLED OVER!"; ft.color = "#ffa94d"; ft.size = 15; ft.vy = -52; ft.life = 1.25; ft.maxLife = 1.25; this.floatingTexts.push(ft);
+          SFX.trashCrash();
         } else {
           player.takeDamage(18, cop.label, game);
           // Push apart
@@ -392,12 +400,43 @@ class EntityManager {
       n.x += n.vx * dt;
       n.y += n.vy * dt;
 
-      if (Math.hypot(n.x - player.x, n.y - player.y) < n.r + player.r && player.z < 16) {
-        player.takeDamage(14, "CAPTURE NET", game);
-        this.addFloatingText(player.x, player.y - 25, "🕸️ NETTED! (JUMP NEXT TIME!)", "#ff6b6b", 14);
-        this.nets.splice(i, 1);
-        continue;
+      let hit = false;
+      const localNetId = game.network ? game.network.localId : 'local_cop';
+
+      // Check hit against local players (if net wasn't fired by local cop)
+      if (n.ownerId !== localNetId) {
+        for (const player of players) {
+          if (player.role === 'cop') continue;
+          if (Math.hypot(n.x - player.x, n.y - player.y) < n.r + player.r && player.z < 16) {
+            player.takeDamage(16, n.ownerName ? `OFFICER ${n.ownerName}'S NET` : "CAPTURE NET", game);
+            this.addFloatingText(player.x, player.y - 25, "🕸️ NETTED! (JUMP NEXT TIME!)", "#ff6b6b", 14);
+            this.nets.splice(i, 1);
+            hit = true;
+            break;
+          }
+        }
+      } else if (game.network && game.network.connected) {
+        // Local Cop player fired this net — check hit against Remote Possum Players!
+        for (const rp of game.network.remotePlayers.values()) {
+          if (rp.role === 'cop') continue;
+          if (Math.hypot(n.x - rp.x, n.y - rp.y) < n.r + rp.r && (rp.z || 0) < 16) {
+            game.network.broadcastEvent('pvp_bash', {
+              targetId: rp.id,
+              pushVx: n.vx * 0.4,
+              pushVy: n.vy * 0.4,
+              damage: 18
+            });
+            game.player.busts = (game.player.busts || 0) + 1;
+            game.addShinies(30, rp.x, rp.y, '🕸️');
+            this.addParticles(rp.x, rp.y, '#63e6be', 14, 150);
+            this.addFloatingText(rp.x, rp.y - 30, `🕸️ NETTED ${rp.name}! +30✨`, '#63e6be', 16);
+            this.nets.splice(i, 1);
+            hit = true;
+            break;
+          }
+        }
       }
+      if (hit) continue;
       if (n.life <= 0) this.nets.splice(i, 1);
     }
 
@@ -409,7 +448,7 @@ class EntityManager {
       pt.y += pt.vy * dt;
       pt.vx *= 0.92;
       pt.vy *= 0.92;
-      if (pt.life <= 0) this.particles.splice(i, 1);
+      if (pt.life <= 0) this.particlePool.release(this.particles[i]); this.particles.splice(i, 1);
     }
 
     // 6. Update Floating Texts
@@ -418,7 +457,7 @@ class EntityManager {
       ft.life -= dt;
       ft.y += ft.vy * dt;
       ft.vy *= 0.94;
-      if (ft.life <= 0) this.floatingTexts.splice(i, 1);
+      if (ft.life <= 0) this.floatingTextPool.release(this.floatingTexts[i]); this.floatingTexts.splice(i, 1);
     }
   }
 
@@ -432,7 +471,7 @@ class EntityManager {
     this.addFloatingText(player.x, player.y - 38, `YOINK! +${ped.item.value} ${ped.item.icon}`, "#ffd43b", 17);
 
     this.addParticles(ped.x, ped.y, "#ffd43b", 12, 140);
-    window.SFX.shinyPickup();
+    SFX.shinyPickup();
 
     game.recordCrime(`Snatched ${ped.item.name} ${ped.item.icon}`, ped.item.value, 14);
 
@@ -627,5 +666,5 @@ class EntityManager {
   }
 }
 
-window.EntityManager = EntityManager;
+
 

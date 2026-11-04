@@ -1,0 +1,25 @@
+{
+  "name": "CRIMOTHY: Grand Theft Possum (Cross-Platform Multiplayer)",
+  "short_name": "CRIMOTHY",
+  "description": "Chaotic cross-platform multiplayer arcade scooter crime game. Play as a Scooter Possum or Animal Control across Desktop, Mobile, Tablet & Gamepad!",
+  "start_url": "./index.html",
+  "display": "standalone",
+  "orientation": "any",
+  "background_color": "#141619",
+  "theme_color": "#ffd43b",
+  "icons": [
+    {
+      "src": "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 128 128'%3E%3Crect width='128' height='128' rx='26' fill='%231a1d24' stroke='%23ffd43b' stroke-width='8'/%3E%3Ctext x='64' y='88' font-size='76' text-anchor='middle'%3E%F0%9F%A6%9D%3C/text%3E%3C/svg%3E",
+      "sizes": "192x192",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    },
+    {
+      "src": "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 512 512'%3E%3Crect width='512' height='512' rx='96' fill='%231a1d24' stroke='%23ffd43b' stroke-width='24'/%3E%3Ctext x='256' y='350' font-size='300' text-anchor='middle'%3E%F0%9F%A6%9D%3C/text%3E%3C/svg%3E",
+      "sizes": "512x512",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}
+

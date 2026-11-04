@@ -1,6 +1,6 @@
 // js/audio.js — Procedural Web Audio API SFX & Funky Trash-Punk Synth
 
-class SoundManager {
+export class SoundManager {
   constructor() {
     this.ctx = null;
     this.muted = false;
@@ -156,5 +156,5 @@ class SoundManager {
   }
 }
 
-window.SFX = new SoundManager();
+export const SFX = new SoundManager();
 

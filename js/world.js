@@ -1,10 +1,12 @@
 // js/world.js — Massive 8x8 City Block Map (5420x5420) Packed with Buildings, Alleys & Dumpsters
 
-class World {
+import { CONSTANTS } from './constants.js';
+
+export class World {
   constructor() {
-    this.blockSize = 520;
-    this.roadWidth = 140;
-    this.gridCount = 8; // 8x8 = 64 City Blocks! (16 blocks per District)
+    this.blockSize = CONSTANTS.WORLD.BLOCK_SIZE;
+    this.roadWidth = CONSTANTS.WORLD.ROAD_WIDTH;
+    this.gridCount = CONSTANTS.WORLD.GRID_COUNT; // 8x8 = 64 City Blocks! (16 blocks per District)
     const step = this.blockSize + this.roadWidth; // 660
     this.width = this.gridCount * step + this.roadWidth;  // 5420
     this.height = this.gridCount * step + this.roadWidth; // 5420
@@ -507,11 +509,13 @@ class World {
     const step = this.blockSize + this.roadWidth;
     const startOffset = this.roadWidth;
 
-    // Viewport bounds for fast culling on the huge 5420x5420 map
-    const viewX1 = camera.x - 160;
-    const viewY1 = camera.y - 160;
-    const viewX2 = camera.x + window.innerWidth + 160;
-    const viewY2 = camera.y + window.innerHeight + 160;
+    // Viewport bounds for fast culling on the huge 5420x5420 map (accounts for resolution zoom)
+    const viewW = camera.viewW || window.innerWidth;
+    const viewH = camera.viewH || window.innerHeight;
+    const viewX1 = camera.x - 180;
+    const viewY1 = camera.y - 180;
+    const viewX2 = camera.x + viewW + 180;
+    const viewY2 = camera.y + viewH + 180;
 
     // 1. Base Asphalt World Background
     ctx.fillStyle = "#242933";
@@ -925,4 +929,4 @@ class World {
   }
 }
 
-window.World = World;
+

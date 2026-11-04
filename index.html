@@ -3,8 +3,13 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
-  <title>CRIMOTHY: Grand Theft Possum</title>
+  <meta name="theme-color" content="#ffd43b" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <title>CRIMOTHY: Grand Theft Possum — Cross-Platform Multiplayer</title>
+  <link rel="manifest" href="manifest.json" />
   <link rel="stylesheet" href="styles.css" />
+  <script src="https://unpkg.com/peerjs@1.5.4/dist/peerjs.min.js" defer></script>
 </head>
 <body>
   <div id="game-container">
@@ -12,30 +17,78 @@
 
     <!-- TOP HUD -->
     <div id="hud-top">
-      <!-- Left: Player Stats & Meters -->
-      <div class="hud-panel hud-left">
-        <div class="portrait-box" id="possum-portrait" title="Crimothy Status">
-          <div class="portrait-face" id="portrait-emoji">🦝</div>
-          <div class="portrait-label" id="portrait-state">RIDING DIRTY</div>
+      <!-- Left Column: Player Stats + Local P2 + Online Roster -->
+      <div class="hud-left-stack">
+        <div class="hud-left-row">
+          <div class="hud-panel hud-left">
+            <div class="portrait-box" id="possum-portrait" title="Crimothy Status">
+              <div class="portrait-face" id="portrait-emoji">🦝</div>
+              <div class="portrait-label" id="portrait-state">RIDING DIRTY</div>
+            </div>
+            <div class="bars-container">
+              <div class="stat-row">
+                <span class="stat-label" id="label-hp">HP / GRIT</span>
+                <div class="progress-bar hp-bar">
+                  <div class="progress-fill" id="hp-fill" style="width: 100%"></div>
+                </div>
+              </div>
+              <div class="stat-row">
+                <span class="stat-label" id="label-boost">NITRO BOOST</span>
+                <div class="progress-bar boost-bar">
+                  <div class="progress-fill" id="boost-fill" style="width: 100%"></div>
+                </div>
+              </div>
+              <div class="stat-row">
+                <span class="stat-label" id="label-special">PLAY DEAD</span>
+                <div class="progress-bar dead-bar">
+                  <div class="progress-fill" id="dead-fill" style="width: 100%"></div>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Player 2 Stats (Local Co-op, Hidden by default) -->
+          <div class="hud-panel hud-left hidden" id="hud-p2">
+            <div class="portrait-box" id="possum-portrait-p2" title="Player 2 Status">
+              <div class="portrait-face" id="portrait-emoji-p2">🦝</div>
+              <div class="portrait-label" id="portrait-state-p2">P2 READY</div>
+            </div>
+            <div class="bars-container">
+              <div class="stat-row">
+                <span class="stat-label">HP / GRIT</span>
+                <div class="progress-bar hp-bar">
+                  <div class="progress-fill" id="hp-fill-p2" style="width: 100%"></div>
+                </div>
+              </div>
+              <div class="stat-row">
+                <span class="stat-label">NITRO BOOST</span>
+                <div class="progress-bar boost-bar">
+                  <div class="progress-fill" id="boost-fill-p2" style="width: 100%"></div>
+                </div>
+              </div>
+              <div class="stat-row">
+                <span class="stat-label">PLAY DEAD</span>
+                <div class="progress-bar dead-bar">
+                  <div class="progress-fill" id="dead-fill-p2" style="width: 100%"></div>
+                </div>
+              </div>
+            </div>
+          </div>
         </div>
-        <div class="bars-container">
-          <div class="stat-row">
-            <span class="stat-label">HP / GRIT</span>
-            <div class="progress-bar hp-bar">
-              <div class="progress-fill" id="hp-fill" style="width: 100%"></div>
-            </div>
+
+        <!-- Live Cross-Platform Multiplayer Roster & Quick Emotes -->
+        <div class="hud-panel mp-hud-card hidden" id="mp-hud-panel">
+          <div class="mp-hud-header">
+            <span id="mp-hud-room-badge" class="mp-room-pill" title="Click to Copy Room Code">🌐 ROOM: ----</span>
+            <span id="mp-hud-mode-badge" class="mp-mode-pill">🤝 CO-OP</span>
+            <button id="btn-mp-copy-hud" class="mp-mini-btn" title="Copy Invite Link">🔗 INVITE</button>
           </div>
-          <div class="stat-row">
-            <span class="stat-label">NITRO BOOST</span>
-            <div class="progress-bar boost-bar">
-              <div class="progress-fill" id="boost-fill" style="width: 100%"></div>
-            </div>
-          </div>
-          <div class="stat-row">
-            <span class="stat-label">PLAY DEAD</span>
-            <div class="progress-bar dead-bar">
-              <div class="progress-fill" id="dead-fill" style="width: 100%"></div>
-            </div>
+          <div id="mp-hud-roster" class="mp-roster-list"></div>
+          <div class="mp-emote-bar">
+            <button class="emote-btn" data-emote="😾 HISS!!">1 😾</button>
+            <button class="emote-btn" data-emote="🍕 PIZZA HERE!">2 🍕</button>
+            <button class="emote-btn" data-emote="🚨 COPS INCOMING!">3 🚨</button>
+            <button class="emote-btn" data-emote="🛴 SICK TRICK!">4 🛴</button>
           </div>
         </div>
       </div>
@@ -50,7 +103,7 @@
           </div>
         </div>
         <div id="bounty-banner">
-          <span class="bounty-tag">ACTIVE CHALLENGE:</span>
+          <span class="bounty-tag" id="bounty-tag-label">ACTIVE CHALLENGE:</span>
           <span id="bounty-text">Tip 3 Trash Cans & Land a Kickflip (0/3)</span>
         </div>
         <div id="district-banner">
@@ -96,9 +149,10 @@
       <div class="minimap-wrapper">
         <canvas id="minimap-canvas" width="170" height="170"></canvas>
         <div class="minimap-legend">
-          <span><i class="dot dot-home"></i>Hideout</span>
-          <span><i class="dot dot-graffiti"></i>Tag Spot</span>
-          <span><i class="dot dot-cop"></i>Control</span>
+          <span><i class="dot dot-home"></i>Safe</span>
+          <span><i class="dot dot-graffiti"></i>Tag</span>
+          <span><i class="dot dot-cop"></i>Cop</span>
+          <span><i class="dot dot-peer"></i>Peer</span>
         </div>
       </div>
 
@@ -109,17 +163,20 @@
 
       <!-- Right: Quick Controls & Upgrade Button -->
       <div class="controls-card" id="keyboard-controls-card">
-        <div class="controls-grid">
+        <div class="controls-grid" id="kb-controls-grid">
           <div><kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd> Ride / Steer</div>
           <div><kbd>SPACE</kbd> Bunnyhop / Trick</div>
           <div><kbd>SHIFT</kbd> Rocket Boost</div>
-          <div><kbd>E</kbd> Crime / Tag / Snatch</div>
-          <div><kbd>Q</kbd> <strong>PLAY DEAD</strong></div>
-          <div><kbd>Z</kbd> / <kbd>X</kbd> Air Tricks</div>
+          <div id="kb-label-e"><kbd>E</kbd> Crime / Tag / Snatch</div>
+          <div id="kb-label-q"><kbd>Q</kbd> <strong>PLAY DEAD</strong></div>
+          <div><kbd>1</kbd>-<kbd>4</kbd> Emotes • <kbd>Z</kbd>/<kbd>X</kbd> Flip</div>
         </div>
         <div class="hud-buttons">
           <button id="btn-shop" class="arcade-btn shop-btn">
-            🛒 DUMPSTER GARAGE (<kbd>TAB</kbd>)
+            🛒 GARAGE (<kbd>TAB</kbd>)
+          </button>
+          <button id="btn-mp-lobby" class="arcade-btn mp-btn" title="Cross-Platform Multiplayer Room & Modes">
+            🌐 ONLINE
           </button>
           <button id="btn-input-mode" class="arcade-btn icon-btn" title="Detected Input Method (Click to Switch Touch / Keyboard)">
             ⌨️ KB/M
@@ -145,9 +202,10 @@
         <div class="joystick-hint">TOUCH & DRAG TO STEER</div>
       </div>
 
-      <!-- Bottom-Center Mobile Utility Bar (Shop, Device Mode, Mute) -->
+      <!-- Bottom-Center Mobile Utility Bar (Shop, Online, Device Mode, Mute) -->
       <div id="touch-utility-bar">
         <button id="touch-btn-shop" class="arcade-btn shop-btn">🛒 GARAGE</button>
+        <button id="touch-btn-mp" class="arcade-btn mp-btn">🌐 ONLINE</button>
         <button id="touch-btn-input" class="arcade-btn icon-btn">📱 TOUCH</button>
         <button id="touch-btn-mute" class="arcade-btn icon-btn">🔊</button>
       </div>
@@ -155,16 +213,16 @@
       <!-- Right: Arcade Touch Action Cluster -->
       <div id="touch-actions">
         <button id="touch-btn-flip" class="touch-action-btn btn-flip">
-          <span class="t-icon">🌀</span>
-          <span class="t-label">FLIP</span>
+          <span class="t-icon" id="touch-icon-flip">🌀</span>
+          <span class="t-label" id="touch-label-flip">FLIP</span>
         </button>
         <button id="touch-btn-dead" class="touch-action-btn btn-dead">
-          <span class="t-icon">💀</span>
-          <span class="t-label">PLAY DEAD</span>
+          <span class="t-icon" id="touch-icon-dead">💀</span>
+          <span class="t-label" id="touch-label-dead">PLAY DEAD</span>
         </button>
         <button id="touch-btn-crime" class="touch-action-btn btn-crime">
-          <span class="t-icon">🎨</span>
-          <span class="t-label">CRIME / TAG</span>
+          <span class="t-icon" id="touch-icon-crime">🎨</span>
+          <span class="t-label" id="touch-label-crime">CRIME / TAG</span>
         </button>
         <button id="touch-btn-boost" class="touch-action-btn btn-boost">
           <span class="t-icon">🚀</span>
@@ -201,7 +259,7 @@
           <button id="btn-close-shop" class="close-btn">✕</button>
         </div>
         <div id="upgrade-list" class="upgrade-grid">
-          <!-- Populated dynamically by game.js -->
+          <!-- Populated dynamically by ui.js -->
         </div>
         <div class="modal-footer">
           <button id="btn-repair" class="arcade-btn repair-btn">
@@ -214,26 +272,129 @@
       </div>
     </div>
 
+    <!-- CROSS-PLATFORM MULTIPLAYER LOBBY & ROLE MODAL (Accessible In-Game) -->
+    <div id="mp-modal" class="modal-overlay hidden">
+      <div class="modal-card mp-modal-card">
+        <div class="modal-header">
+          <div>
+            <h2>🌐 CROSS-PLATFORM MULTIPLAYER LOBBY</h2>
+            <p class="modal-subtitle">Play across Desktop, Mobile, Tablet & Gamepad via WebRTC Room Codes or Local Sync!</p>
+          </div>
+          <button id="btn-close-mp" class="close-btn">✕</button>
+        </div>
+
+        <div class="mp-lobby-body">
+          <!-- Callsign & Color Row -->
+          <div class="mp-config-row">
+            <div class="mp-field">
+              <label>YOUR CALLSIGN:</label>
+              <input type="text" id="mp-name-input" maxlength="14" placeholder="CRIMOTHY" />
+            </div>
+            <div class="mp-field">
+              <label>BANDANA / ACCENT COLOR:</label>
+              <div id="mp-color-swatches" class="color-swatch-row"></div>
+            </div>
+          </div>
+
+          <!-- Team / Role Selection (Possum vs Animal Control) -->
+          <div class="mp-field">
+            <label>CHOOSE YOUR FACTION / ROLE:</label>
+            <div class="device-mode-buttons">
+              <button id="mp-role-possum" class="mode-select-btn active">
+                🦝 POSSUM SYNDICATE (SHRED, TAG & STEAL)
+              </button>
+              <button id="mp-role-cop" class="mode-select-btn">
+                🚨 ANIMAL CONTROL OFFICER (HUNT & NET POSSUMS)
+              </button>
+            </div>
+          </div>
+
+          <!-- Animal Control Vehicle Picker (Shown when Animal Control is selected) -->
+          <div id="mp-cop-vehicle-box" class="mp-field hidden">
+            <label>SELECT ANIMAL CONTROL UNIT:</label>
+            <div class="device-mode-buttons">
+              <button class="mode-select-btn cop-unit-btn active" data-unit="catcher">🕸️ NET CATCHER (RAPID NETS)</button>
+              <button class="mode-select-btn cop-unit-btn" data-unit="k9">🐕 K-9 BLOODHOUND (FAST TRACKER)</button>
+              <button class="mode-select-btn cop-unit-btn" data-unit="swatvan">🚓 SWAT NET-CRUISER (ARMORED VAN)</button>
+            </div>
+          </div>
+
+          <!-- Game Mode Selection -->
+          <div class="mp-field">
+            <label>MULTIPLAYER GAME MODE:</label>
+            <div class="device-mode-buttons">
+              <button class="mode-select-btn mp-gamemode-btn active" data-mode="coop">
+                🤝 CO-OP SYNDICATE (SHARED CRIMES & REVIVES)
+              </button>
+              <button class="mode-select-btn mp-gamemode-btn" data-mode="versus">
+                ⚔️ TURF WAR VERSUS (INFAMY RACE & BASHING)
+              </button>
+              <button class="mode-select-btn mp-gamemode-btn" data-mode="cops_robbers">
+                🚨 POSSUMS VS. COPS (ASYMMETRIC HUNT)
+              </button>
+            </div>
+          </div>
+
+          <!-- Host / Join Room Box -->
+          <div class="mp-room-actions-box">
+            <div class="mp-host-col">
+              <button id="btn-mp-host" class="arcade-btn primary-btn" style="width:100%;">
+                📡 CREATE / HOST ROOM
+              </button>
+            </div>
+            <div class="mp-join-col">
+              <input type="text" id="mp-room-input" maxlength="8" placeholder="ENTER ROOM CODE" />
+              <button id="btn-mp-join" class="arcade-btn shop-btn">
+                🔗 JOIN ROOM
+              </button>
+            </div>
+          </div>
+
+          <!-- Connection Status & Share Bar -->
+          <div class="mp-status-bar">
+            <div id="mp-status-label">📡 STATUS: OFFLINE (SOLO / LOCAL)</div>
+            <div class="mp-share-btns">
+              <button id="btn-mp-copy-code" class="arcade-btn icon-btn">📋 COPY CODE</button>
+              <button id="btn-mp-copy-link" class="arcade-btn icon-btn">🔗 COPY INVITE LINK</button>
+              <button id="btn-mp-disconnect" class="arcade-btn close-room-btn hidden">🚪 LEAVE</button>
+            </div>
+          </div>
+
+          <!-- Connected Players Table -->
+          <div class="mp-connected-section">
+            <div class="mp-section-title">CONNECTED CROSS-PLATFORM PLAYERS:</div>
+            <div id="mp-modal-roster" class="mp-modal-roster-grid"></div>
+          </div>
+        </div>
+
+        <div class="modal-footer">
+          <button id="btn-mp-resume" class="arcade-btn start-btn">
+            🛴 RIDE INTO THE STREETS!
+          </button>
+        </div>
+      </div>
+    </div>
+
     <!-- START / TITLE OVERLAY -->
     <div id="title-modal" class="modal-overlay">
       <div class="title-card">
-        <div class="title-badge">TRASH PANDA GAMES PRESENTS</div>
+        <div class="title-badge">TRASH PANDA GAMES • CROSS-PLATFORM EDITION</div>
         <h1 class="game-title">CRIMOTHY</h1>
         <h2 class="game-subtitle">GRAND THEFT POSSUM</h2>
         <p class="title-desc">
-          You are <strong>Crimothy</strong>: a chaotic North American Virginia Opossum with a stolen kick-scooter, a can of neon spray paint, and zero respect for municipal ordinances.
+          Shred the streets solo, in 2P Local Co-op, or in <strong>Cross-Platform Online Multiplayer</strong> across Desktop, Mobile, Tablet & Gamepad!
         </p>
         <div class="feature-pills">
-          <span>🛴 Shred & Pull Air Tricks</span>
-          <span>👜 Snatch Purses & Pizza</span>
-          <span>🎨 Tag Walls & Smash Bins</span>
-          <span>💀 Play Dead to Fool Cops</span>
-          <span>🚀 Upgrade Your Rig</span>
+          <span>🤝 Online Co-op</span>
+          <span>⚔️ Turf War Versus</span>
+          <span>🚨 Possums vs. Cops</span>
+          <span>📱 Mobile + 🖥️ PC + 🎮 Pad</span>
         </div>
 
         <!-- DEVICE DETECTION & CONTROL MODE SELECTOR -->
         <div class="device-detect-box">
           <div id="detected-device-label">🔍 DETECTING DEVICE PLATFORM...</div>
+          <div id="detected-resolution-label">📐 SCREEN: -- × -- (AUTO-SCALING)</div>
           <div class="device-mode-buttons">
             <button id="title-mode-kb" class="mode-select-btn active">
               🖥️ DESKTOP (KEYBOARD & MOUSE)
@@ -241,6 +402,45 @@
             <button id="title-mode-touch" class="mode-select-btn">
               📱 MOBILE / TABLET (TOUCH SCREEN)
             </button>
+          </div>
+        </div>
+
+        <!-- PLAYER / MULTIPLAYER MODE SELECTOR -->
+        <div class="device-detect-box">
+          <div class="device-mode-buttons">
+            <button id="title-mode-1p" class="mode-select-btn active">
+              👤 1P SOLO
+            </button>
+            <button id="title-mode-2p" class="mode-select-btn">
+              👥 2P LOCAL CO-OP
+            </button>
+            <button id="title-mode-online" class="mode-select-btn">
+              🌐 ONLINE CROSS-PLATFORM
+            </button>
+          </div>
+
+          <!-- Inline Quick-Connect Box when Online Cross-Platform is selected on Title Screen -->
+          <div id="title-online-box" class="title-online-panel hidden">
+            <div class="title-mp-row">
+              <input type="text" id="title-mp-name" maxlength="14" placeholder="YOUR CALLSIGN" />
+              <select id="title-mp-role" class="title-mp-select">
+                <option value="possum">🦝 Role: Possum Syndicate</option>
+                <option value="cop">🚨 Role: Animal Control Officer</option>
+              </select>
+              <select id="title-mp-gamemode" class="title-mp-select">
+                <option value="coop">🤝 Mode: Co-op Syndicate</option>
+                <option value="versus">⚔️ Mode: Turf War Versus</option>
+                <option value="cops_robbers">🚨 Mode: Possums vs. Cops</option>
+              </select>
+            </div>
+            <div class="title-mp-row">
+              <button id="title-btn-host" class="arcade-btn primary-btn">📡 HOST ROOM</button>
+              <input type="text" id="title-mp-code" maxlength="8" placeholder="ROOM CODE" />
+              <button id="title-btn-join" class="arcade-btn shop-btn">🔗 JOIN</button>
+            </div>
+            <div id="title-mp-status" class="title-mp-status-text">
+              💡 Tip: Host a Room Code to play across Phone, Tablet & PC, or open a 2nd browser tab to test instantly!
+            </div>
           </div>
         </div>
 
@@ -263,11 +463,6 @@
     </div>
   </div>
 
-  <script src="js/audio.js"></script>
-  <script src="js/world.js"></script>
-  <script src="js/entities.js"></script>
-  <script src="js/player.js"></script>
-  <script src="js/game.js"></script>
+  <script type="module" src="js/main.js"></script>
 </body>
 </html>
-

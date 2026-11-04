@@ -1,0 +1,17 @@
+export const CONSTANTS = {
+  WORLD: {
+    BLOCK_SIZE: 520,
+    ROAD_WIDTH: 140,
+    GRID_COUNT: 8
+  },
+  PLAYER: {
+    MAX_HP: 100,
+    MAX_BOOST: 100,
+    MAX_PLAY_DEAD: 100,
+    BASE_SPEED: 295,
+    BASE_MAGNET_RADIUS: 65
+  },
+  GAME: {
+    COMBO_MAX_TIMER: 5.5
+  }
+};

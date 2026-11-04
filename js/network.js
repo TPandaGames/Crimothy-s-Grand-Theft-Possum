@@ -1,0 +1,1048 @@
+// js/network.js — Cross-Platform Multiplayer Engine (WebRTC P2P via PeerJS + BroadcastChannel Local Fallback)
+// Supports Desktop (Windows/Mac/Linux), Mobile (iOS/Android), Tablets & Gamepads across 3 Modes:
+// 1. Co-op Syndicate (Shared crimes, infamy, district unlocks & teammate revives)
+// 2. Turf War Versus (Competitive Infamy race + Rival Scooter Bash to knock loose shinies)
+// 3. Possums vs. Animal Control (Asymmetric Cops & Robbers — play as Possum or Animal Control!)
+
+import { SFX } from './audio.js';
+
+const PEER_PREFIX = 'crimothy-xplat-v2-';
+
+export const PLAYER_COLORS = [
+  { id: 'red',    name: 'Punk Red',     hex: '#e03131', fur: '#868e96' },
+  { id: 'cyan',   name: 'Neon Cyan',    hex: '#15aabf', fur: '#748ffc' },
+  { id: 'green',  name: 'Toxic Lime',   hex: '#51cf66', fur: '#8ce99a' },
+  { id: 'gold',   name: 'Trash Gold',   hex: '#fcc419', fur: '#adb5bd' },
+  { id: 'purple', name: 'Synth Purple', hex: '#be4bdb', fur: '#a08696' },
+  { id: 'pink',   name: 'Hot Pink',     hex: '#f783ac', fur: '#ced4da' }
+];
+
+export const COP_VEHICLES = [
+  { id: 'catcher', name: 'Net Catcher',       icon: '🕸️', speed: 325, hp: 120, desc: 'Fast foot officer with rapid-fire Capture Nets [E]' },
+  { id: 'k9',      name: 'K-9 Bloodhound',    icon: '🐕', speed: 355, hp: 100, desc: 'Ultra-fast tracker that sniffs out Playing Dead possums!' },
+  { id: 'swatvan', name: 'Warden Net-Cruiser', icon: '🚓', speed: 340, hp: 160, desc: 'Heavy Armored Van with Siren Shockwave [Q] & Net Cannon [E]' }
+];
+
+export class NetworkManager {
+  constructor(game) {
+    this.game = game;
+
+    this.localId = 'p_' + Math.random().toString(36).substring(2, 9);
+    this.playerName = localStorage.getItem('crimothy_name') || `POSSUM-${Math.floor(100 + Math.random() * 899)}`;
+    this.playerColor = localStorage.getItem('crimothy_color') || '#e03131';
+    this.playerRole = 'possum'; // 'possum' | 'cop'
+    this.copVehicle = 'catcher'; // 'catcher' | 'k9' | 'swatvan'
+
+    // 'coop' | 'versus' | 'cops_robbers'
+    this.gameMode = 'coop';
+
+    this.roomCode = '';
+    this.isHost = false;
+    this.connected = false;
+    this.statusText = 'OFFLINE (SOLO / LOCAL)';
+
+    // WebRTC PeerJS instance & connections map (peerId -> DataConnection)
+    this.peer = null;
+    this.connections = new Map();
+
+    // Local BroadcastChannel for instant zero-config multi-tab / same-device testing
+    this.bc = null;
+
+    // Remote players map: id -> RemotePlayer state
+    this.remotePlayers = new Map();
+
+    // Sync timers
+    this.syncAccumulator = 0;
+    this.syncInterval = 0.05; // 20 Hz state sync
+    this.bashCooldown = 0;
+
+    // Dedup recent event IDs
+    this.seenEvents = new Set();
+  }
+
+  getPlatformShortIcon() {
+    if (this.game.gamepadActive) return '🎮';
+    if (this.game.inputMethod === 'touch' || (this.game.deviceInfo && this.game.deviceInfo.isMobileOrTablet)) {
+      return '📱';
+    }
+    return '🖥️';
+  }
+
+  getPlatformName() {
+    if (this.game.gamepadActive) return 'Gamepad';
+    if (this.game.deviceInfo) return this.game.deviceInfo.platformName;
+    return 'Desktop';
+  }
+
+  generateRoomCode() {
+    const words = ['TRASH', 'POSUM', 'SCOOT', 'SHINY', 'HISS9', 'ALLEY', 'CRIME', 'PIZZA', 'DUMP5', 'NEON8'];
+    const base = words[Math.floor(Math.random() * words.length)];
+    const num = Math.floor(10 + Math.random() * 89);
+    return `${base.slice(0, 3)}${num}`;
+  }
+
+  setProfile({ name, color, role, copVehicle, gameMode }) {
+    if (name !== undefined) {
+      this.playerName = (name.trim().slice(0, 14) || 'CRIMOTHY').toUpperCase();
+      localStorage.setItem('crimothy_name', this.playerName);
+    }
+    if (color !== undefined) {
+      this.playerColor = color;
+      localStorage.setItem('crimothy_color', this.playerColor);
+      if (this.game.player) this.game.player.customColor = this.playerColor;
+    }
+    if (role !== undefined) {
+      this.playerRole = role;
+      if (this.game.player) {
+        this.game.player.role = role;
+        this.game.player.copVehicle = this.copVehicle;
+      }
+    }
+    if (copVehicle !== undefined) {
+      this.copVehicle = copVehicle;
+      if (this.game.player) {
+        this.game.player.copVehicle = copVehicle;
+      }
+    }
+    if (gameMode !== undefined) {
+      this.gameMode = gameMode;
+      if (this.isHost && this.connected) {
+        this.broadcastEvent('mode_change', { gameMode: this.gameMode });
+      }
+    }
+    this.game.ui.updateMultiplayerUI();
+  }
+
+  async hostRoom(customCode = '') {
+    this.disconnect();
+    this.roomCode = (customCode.trim().toUpperCase().replace(/[^A-Z0-9]/g, '') || this.generateRoomCode()).slice(0, 8);
+    this.isHost = true;
+    this.connected = true;
+    this.statusText = `HOSTING ROOM: ${this.roomCode}`;
+
+    this.setupBroadcastChannel(this.roomCode);
+    this.setupPeerJS(this.roomCode, true);
+
+    this.game.ui.updateMultiplayerUI();
+    return this.roomCode;
+  }
+
+  async joinRoom(code) {
+    const clean = (code || '').trim().toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 8);
+    if (!clean) return false;
+
+    this.disconnect();
+    this.roomCode = clean;
+    this.isHost = false;
+    this.connected = true;
+    this.statusText = `CONNECTING TO ${this.roomCode}...`;
+
+    this.setupBroadcastChannel(this.roomCode);
+    this.setupPeerJS(this.roomCode, false);
+
+    // Send immediate hello on BroadcastChannel in case Host is on same browser/device
+    this.sendHello();
+    this.game.ui.updateMultiplayerUI();
+    return true;
+  }
+
+  disconnect() {
+    if (this.connected) {
+      this.broadcastRaw({
+        type: 'leave',
+        senderId: this.localId
+      });
+    }
+    if (this.bc) {
+      this.bc.close();
+      this.bc = null;
+    }
+    for (const conn of this.connections.values()) {
+      try { conn.close(); } catch (_) {}
+    }
+    this.connections.clear();
+    if (this.peer) {
+      try { this.peer.destroy(); } catch (_) {}
+      this.peer = null;
+    }
+    this.remotePlayers.clear();
+    this.connected = false;
+    this.isHost = false;
+    this.roomCode = '';
+    this.statusText = 'OFFLINE (SOLO / LOCAL)';
+    this.game.ui.updateMultiplayerUI();
+  }
+
+  setupBroadcastChannel(roomCode) {
+    if (typeof BroadcastChannel === 'undefined') return;
+    try {
+      this.bc = new BroadcastChannel(`crimothy_room_${roomCode}`);
+      this.bc.onmessage = (ev) => {
+        if (ev && ev.data) {
+          this.handleIncomingPacket(ev.data, null);
+        }
+      };
+      if (this.isHost) {
+        this.statusText = `LIVE ROOM: ${this.roomCode} (P2P + LOCAL)`;
+      } else {
+        this.statusText = `CONNECTED TO ${this.roomCode}`;
+      }
+    } catch (_) {}
+  }
+
+  setupPeerJS(roomCode, asHost) {
+    const PeerClass = window.Peer;
+    if (!PeerClass) {
+      // BroadcastChannel still works for local multi-tab even if offline/no CDN
+      this.statusText = `ROOM: ${roomCode} (LOCAL LAN/TAB MODE)`;
+      this.game.ui.updateMultiplayerUI();
+      return;
+    }
+
+    const hostPeerId = `${PEER_PREFIX}${roomCode}`;
+    const myPeerId = asHost ? hostPeerId : `${PEER_PREFIX}${roomCode}-${this.localId}`;
+
+    try {
+      this.peer = new PeerClass(myPeerId, {
+        debug: 0
+      });
+
+      this.peer.on('open', () => {
+        if (asHost) {
+          this.statusText = `HOSTING: ${roomCode} (CROSS-PLATFORM P2P READY)`;
+          this.game.ui.updateMultiplayerUI();
+        } else {
+          const conn = this.peer.connect(hostPeerId, { reliable: false });
+          this.registerPeerConnection(conn);
+        }
+      });
+
+      this.peer.on('connection', (conn) => {
+        this.registerPeerConnection(conn);
+      });
+
+      this.peer.on('error', (err) => {
+        // If room ID is already taken on PeerServer when user clicked Host, seamlessly join it instead!
+        if (asHost && err && err.type === 'unavailable-id') {
+          this.isHost = false;
+          this.statusText = `JOINING EXISTING ROOM ${roomCode}...`;
+          try { this.peer.destroy(); } catch (_) {}
+          this.setupPeerJS(roomCode, false);
+          return;
+        }
+        // Keep BroadcastChannel active if PeerServer is unreachable
+        if (this.connected) {
+          this.statusText = `ROOM ${roomCode} ACTIVE`;
+          this.game.ui.updateMultiplayerUI();
+        }
+      });
+    } catch (_) {
+      this.statusText = `ROOM ${roomCode} (LOCAL MODE)`;
+      this.game.ui.updateMultiplayerUI();
+    }
+  }
+
+  registerPeerConnection(conn) {
+    conn.on('open', () => {
+      this.connections.set(conn.peer, conn);
+      this.statusText = `${this.isHost ? 'HOSTING' : 'IN ROOM'}: ${this.roomCode} (${this.getPlayerCount()}P ONLINE)`;
+      this.sendHello(conn);
+      if (this.isHost) {
+        this.sendWorldSnapshot(conn);
+      }
+      this.game.ui.updateMultiplayerUI();
+    });
+
+    conn.on('data', (data) => {
+      this.handleIncomingPacket(data, conn);
+    });
+
+    conn.on('close', () => {
+      this.connections.delete(conn.peer);
+      this.game.ui.updateMultiplayerUI();
+    });
+  }
+
+  sendHello(targetConn = null) {
+    const pkt = {
+      type: 'hello',
+      senderId: this.localId,
+      name: this.playerName,
+      color: this.playerColor,
+      role: this.playerRole,
+      copVehicle: this.copVehicle,
+      platformIcon: this.getPlatformShortIcon(),
+      platformName: this.getPlatformName(),
+      gameMode: this.gameMode
+    };
+    if (targetConn && targetConn.open) {
+      targetConn.send(pkt);
+    } else {
+      this.broadcastRaw(pkt);
+    }
+  }
+
+  sendWorldSnapshot(targetConn = null) {
+    if (!this.isHost) return;
+    const unlockedIds = this.game.world.districts.filter((d) => d.unlocked).map((d) => d.id);
+    const taggedIndices = [];
+    this.game.world.graffitiSpots.forEach((g, idx) => {
+      if (g.tagged) taggedIndices.push(idx);
+    });
+
+    const pkt = {
+      type: 'world_snapshot',
+      senderId: this.localId,
+      gameMode: this.gameMode,
+      infamy: this.game.infamy,
+      heat: this.game.heat,
+      wantedLevel: this.game.wantedLevel,
+      bountyIdx: this.game.currentBountyIdx,
+      bountyProgress: this.game.bounties[this.game.currentBountyIdx]?.progress || 0,
+      unlockedIds,
+      taggedIndices
+    };
+    if (targetConn && targetConn.open) {
+      targetConn.send(pkt);
+    } else {
+      this.broadcastRaw(pkt);
+    }
+  }
+
+  broadcastRaw(packet, excludeConn = null) {
+    if (!this.connected) return;
+
+    // 1. Send over BroadcastChannel (same device / multi-tab)
+    if (this.bc) {
+      try {
+        this.bc.postMessage(packet);
+      } catch (_) {}
+    }
+
+    // 2. Send over WebRTC PeerJS DataConnections
+    for (const conn of this.connections.values()) {
+      if (conn !== excludeConn && conn.open) {
+        try {
+          conn.send(packet);
+        } catch (_) {}
+      }
+    }
+  }
+
+  broadcastEvent(eventType, payload = {}) {
+    if (!this.connected) return;
+    const eventId = `${this.localId}_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
+    this.seenEvents.add(eventId);
+    this.broadcastRaw({
+      type: 'event',
+      eventId,
+      senderId: this.localId,
+      senderName: this.playerName,
+      eventType,
+      payload
+    });
+  }
+
+  handleIncomingPacket(data, sourceConn) {
+    if (!data || data.senderId === this.localId) return;
+
+    // If we are the Host and received a packet over WebRTC from client A, relay it to other WebRTC clients B, C...
+    if (this.isHost && sourceConn && this.connections.size > 1) {
+      for (const conn of this.connections.values()) {
+        if (conn !== sourceConn && conn.open) {
+          try { conn.send(data); } catch (_) {}
+        }
+      }
+    }
+
+    if (data.type === 'hello') {
+      this.ensureRemotePlayer(data.senderId, data);
+      if (this.isHost) {
+        this.sendWorldSnapshot(sourceConn);
+      }
+      this.game.entities.addFloatingText(
+        this.game.player.x,
+        this.game.player.y - 50,
+        `${data.platformIcon || '🌐'} ${data.name} JOINED THE STREETS!`,
+        '#63e6be',
+        16
+      );
+      this.addCrimeToast(`${data.platformIcon || '🌐'} ${data.name} joined (${data.role === 'cop' ? '🚨 COP' : '🦝 POSSUM'})`);
+      this.game.ui.updateMultiplayerUI();
+      return;
+    }
+
+    if (data.type === 'leave') {
+      const rp = this.remotePlayers.get(data.senderId);
+      if (rp) {
+        this.addCrimeToast(`👋 ${rp.name} left the room`);
+        this.remotePlayers.delete(data.senderId);
+        this.game.ui.updateMultiplayerUI();
+      }
+      return;
+    }
+
+    if (data.type === 'world_snapshot' && !this.isHost) {
+      this.gameMode = data.gameMode || this.gameMode;
+      if (this.gameMode === 'coop') {
+        this.game.infamy = Math.max(this.game.infamy, data.infamy || 0);
+        this.game.heat = data.heat || 0;
+        this.game.wantedLevel = data.wantedLevel || 0;
+        if (typeof data.bountyIdx === 'number') {
+          this.game.currentBountyIdx = data.bountyIdx;
+          if (this.game.bounties[this.game.currentBountyIdx]) {
+            this.game.bounties[this.game.currentBountyIdx].progress = data.bountyProgress || 0;
+          }
+        }
+      }
+      if (Array.isArray(data.unlockedIds)) {
+        for (const id of data.unlockedIds) {
+          const dist = this.game.world.districts.find((d) => d.id === id);
+          if (dist) dist.unlocked = true;
+        }
+      }
+      if (Array.isArray(data.taggedIndices)) {
+        for (const idx of data.taggedIndices) {
+          if (this.game.world.graffitiSpots[idx]) {
+            this.game.world.graffitiSpots[idx].tagged = true;
+          }
+        }
+      }
+      this.game.ui.updateHUD();
+      this.game.ui.updateMultiplayerUI();
+      return;
+    }
+
+    if (data.type === 'state') {
+      const rp = this.ensureRemotePlayer(data.senderId, data);
+      rp.targetX = data.x;
+      rp.targetY = data.y;
+      rp.vx = data.vx || 0;
+      rp.vy = data.vy || 0;
+      rp.z = data.z || 0;
+      rp.angle = data.angle || 0;
+      rp.speed = data.speed || 0;
+      rp.airTrickAngle = data.airTrickAngle || 0;
+      rp.deckSpinAngle = data.deckSpinAngle || 0;
+      rp.isPlayingDead = !!data.isPlayingDead;
+      rp.boostActive = !!data.boostActive;
+      rp.hp = data.hp ?? 100;
+      rp.maxHp = data.maxHp ?? 100;
+      rp.role = data.role || 'possum';
+      rp.copVehicle = data.copVehicle || 'catcher';
+      rp.color = data.color || '#15aabf';
+      rp.name = data.name || rp.name;
+      rp.platformIcon = data.platformIcon || rp.platformIcon || '🌐';
+      rp.shinies = data.shinies || 0;
+      rp.infamy = data.infamy || 0;
+      rp.busts = data.busts || 0;
+      rp.upgrades = data.upgrades || rp.upgrades;
+      rp.lastSeen = performance.now();
+      return;
+    }
+
+    if (data.type === 'event') {
+      if (data.eventId && this.seenEvents.has(data.eventId)) return;
+      if (data.eventId) {
+        this.seenEvents.add(data.eventId);
+        if (this.seenEvents.size > 400) {
+          const first = this.seenEvents.values().next().value;
+          this.seenEvents.delete(first);
+        }
+      }
+      this.handleNetworkEvent(data.eventType, data.payload || {}, data.senderId, data.senderName);
+    }
+  }
+
+  ensureRemotePlayer(id, initData = {}) {
+    let rp = this.remotePlayers.get(id);
+    if (!rp) {
+      const sx = initData.x ?? this.game.world.hideout.x + 30;
+      const sy = initData.y ?? this.game.world.hideout.y + 30;
+      rp = {
+        id,
+        name: initData.name || 'POSSUM',
+        color: initData.color || '#15aabf',
+        role: initData.role || 'possum',
+        copVehicle: initData.copVehicle || 'catcher',
+        platformIcon: initData.platformIcon || '🌐',
+        platformName: initData.platformName || 'Player',
+        x: sx,
+        y: sy,
+        targetX: sx,
+        targetY: sy,
+        vx: 0,
+        vy: 0,
+        z: 0,
+        angle: 0,
+        speed: 0,
+        r: 16,
+        airTrickAngle: 0,
+        deckSpinAngle: 0,
+        isPlayingDead: false,
+        boostActive: false,
+        hp: 100,
+        maxHp: 100,
+        shinies: 0,
+        infamy: 0,
+        busts: 0,
+        tailPhase: 0,
+        sirenWaveTimer: 0,
+        emoteText: '',
+        emoteTimer: 0,
+        upgrades: { deck: 0, wheels: 0, rocket: 0, acting: 0, spray: 0, magnet: 0 },
+        lastSeen: performance.now()
+      };
+      this.remotePlayers.set(id, rp);
+      this.game.ui.updateMultiplayerUI();
+    }
+    return rp;
+  }
+
+  handleNetworkEvent(eventType, payload, senderId, senderName) {
+    const g = this.game;
+
+    if (eventType === 'mode_change') {
+      this.gameMode = payload.gameMode || 'coop';
+      this.addCrimeToast(`🎮 Mode set to: ${this.getModeLabel()}`);
+      g.ui.updateMultiplayerUI();
+      g.ui.updateHUD();
+    } else if (eventType === 'crime') {
+      this.addCrimeToast(`🦝 ${senderName}: ${payload.title} (+${payload.reward}✨)`);
+      if (this.gameMode === 'coop') {
+        g.shinies += Math.round((payload.reward || 10) * 0.5);
+        g.infamy = Math.max(g.infamy, payload.totalInfamy || g.infamy + (payload.reward || 10) * 10);
+        g.heat = Math.min(500, Math.max(g.heat, payload.heat || g.heat));
+        g.wantedLevel = Math.min(5, Math.floor(g.heat / 85));
+        g.checkDistrictUnlocks();
+        if (payload.category) {
+          g.checkBountyProgress(payload.category, true);
+        }
+        g.ui.updateHUD();
+      } else if (this.gameMode === 'cops_robbers') {
+        // Alert Animal Control players where the crime happened!
+        g.heat = Math.min(500, g.heat + (payload.heatAdded || 12));
+        g.wantedLevel = Math.min(5, Math.floor(g.heat / 85));
+        if (this.playerRole === 'cop' && payload.x && payload.y) {
+          g.entities.addFloatingText(payload.x, payload.y - 40, `🚨 CRIME ALERT: ${senderName}!`, '#ff4d4f', 16);
+        }
+        g.ui.updateHUD();
+      }
+    } else if (eventType === 'prop_smash') {
+      const prop = g.world.props[payload.propIndex];
+      if (prop) {
+        if (prop.type === 'dumpster') {
+          prop.looted = true;
+          prop.respawnTimer = 30;
+        } else {
+          prop.smashed = true;
+          prop.respawnTimer = 30;
+          prop.vx = payload.vx || 0;
+          prop.vy = payload.vy || 0;
+          if (prop.type === 'hydrant') prop.geyserTimer = 14.0;
+        }
+        g.entities.addParticles(prop.x, prop.y, '#ffd43b', 10, 130);
+      }
+    } else if (eventType === 'graffiti_tag') {
+      const spot = g.world.graffitiSpots[payload.spotIndex];
+      if (spot && !spot.tagged) {
+        spot.tagged = true;
+        g.entities.addParticles(spot.x, spot.y, '#cc5de8', 18, 150, 5);
+        setTimeout(() => { spot.tagged = false; }, 45000);
+      }
+    } else if (eventType === 'net_fired') {
+      g.entities.nets.push({
+        x: payload.x,
+        y: payload.y,
+        vx: payload.vx,
+        vy: payload.vy,
+        r: 18,
+        life: 1.25,
+        ownerId: senderId,
+        ownerName: senderName
+      });
+      SFX.sprayCan();
+    } else if (eventType === 'siren_blast') {
+      const rp = this.remotePlayers.get(senderId);
+      if (rp) rp.sirenWaveTimer = 0.65;
+      SFX.sirenchirp();
+      g.entities.addParticles(payload.x, payload.y, '#339af0', 20, 210, 6);
+      // If local player is a possum within range, disrupt Play Dead & apply minor stun/damage
+      if (this.playerRole === 'possum') {
+        const d = Math.hypot(g.player.x - payload.x, g.player.y - payload.y);
+        if (d < 190) {
+          if (g.player.isPlayingDead) {
+            g.player.isPlayingDead = false;
+            g.entities.addFloatingText(g.player.x, g.player.y - 36, '🚨 SIREN SPOOKED YOU AWAKE!', '#ff4d4f', 16);
+          }
+          g.player.takeDamage(12, `OFFICER ${senderName}'S SIREN`, g);
+        }
+      }
+    } else if (eventType === 'pvp_bash') {
+      if (payload.targetId === this.localId) {
+        g.player.vx += payload.pushVx || 0;
+        g.player.vy += payload.pushVy || 0;
+        if (payload.damage > 0) {
+          g.player.takeDamage(payload.damage, `${senderName}`, g);
+        } else {
+          SFX.trashCrash();
+          g.triggerScreenShake(7, 0.2);
+        }
+        // In Turf War Versus, drop some shinies on scooter bash!
+        if (this.gameMode === 'versus' && g.shinies > 5) {
+          const stolen = Math.min(g.shinies, Math.max(4, Math.floor(g.shinies * 0.15)));
+          g.shinies -= stolen;
+          g.entities.spawnLoot(g.player.x, g.player.y, 4, Math.ceil(stolen / 4));
+          g.entities.addFloatingText(g.player.x, g.player.y - 42, `💥 BASHED BY ${senderName}! -${stolen}✨`, '#ff922b', 16);
+          g.ui.updateHUD();
+        }
+      }
+    } else if (eventType === 'coop_revive') {
+      if (payload.targetId === this.localId) {
+        g.player.hp = g.player.maxHp;
+        if (g.bustedModalOpen) {
+          document.getElementById('busted-modal').classList.add('hidden');
+          g.bustedModalOpen = false;
+          g.paused = false;
+        }
+        SFX.upgradeBuy();
+        g.entities.addParticles(g.player.x, g.player.y, '#51cf66', 20, 160);
+        g.entities.addFloatingText(g.player.x, g.player.y - 40, `💚 REVIVED & HEALED BY ${senderName}!`, '#51cf66', 17);
+        g.ui.updateHUD();
+      }
+    } else if (eventType === 'emote') {
+      const rp = this.remotePlayers.get(senderId);
+      if (rp) {
+        rp.emoteText = payload.text;
+        rp.emoteTimer = 3.2;
+        g.entities.addFloatingText(rp.x, rp.y - 44, `${rp.name}: ${payload.text}`, '#ffd43b', 15);
+      }
+      this.addCrimeToast(`💬 ${senderName}: ${payload.text}`);
+    }
+  }
+
+  sendEmote(text) {
+    const p = this.game.player;
+    p.emoteText = text;
+    p.emoteTimer = 3.2;
+    this.game.entities.addFloatingText(p.x, p.y - 44, `${this.playerName}: ${text}`, '#ffd43b', 16);
+    if (this.connected) {
+      this.broadcastEvent('emote', { text });
+    }
+  }
+
+  addCrimeToast(msg) {
+    const feed = document.getElementById('crime-feed');
+    if (!feed) return;
+    const toast = document.createElement('div');
+    toast.className = 'crime-toast';
+    toast.style.borderLeftColor = '#63e6be';
+    toast.textContent = msg;
+    feed.prepend(toast);
+    while (feed.children.length > 4) {
+      feed.lastChild.remove();
+    }
+    setTimeout(() => toast.remove(), 4000);
+  }
+
+  getModeLabel() {
+    if (this.gameMode === 'versus') return '⚔️ TURF WAR (VERSUS)';
+    if (this.gameMode === 'cops_robbers') return '🚨 POSSUMS VS. COPS';
+    return '🤝 CO-OP SYNDICATE';
+  }
+
+  getPlayerCount() {
+    return 1 + this.remotePlayers.size;
+  }
+
+  getLeaderboard() {
+    const list = [
+      {
+        id: this.localId,
+        name: `${this.playerName} (YOU)`,
+        role: this.playerRole,
+        color: this.playerColor,
+        platformIcon: this.getPlatformShortIcon(),
+        hp: Math.round(this.game.player.hp),
+        maxHp: this.game.player.maxHp,
+        shinies: this.game.shinies,
+        infamy: this.game.infamy,
+        busts: this.game.player.busts || 0,
+        isLocal: true
+      }
+    ];
+    for (const rp of this.remotePlayers.values()) {
+      list.push({
+        id: rp.id,
+        name: rp.name,
+        role: rp.role,
+        color: rp.color,
+        platformIcon: rp.platformIcon || '🌐',
+        hp: Math.round(rp.hp),
+        maxHp: rp.maxHp || 100,
+        shinies: rp.shinies || 0,
+        infamy: rp.infamy || 0,
+        busts: rp.busts || 0,
+        isLocal: false
+      });
+    }
+    list.sort((a, b) => (b.infamy + b.busts * 500) - (a.infamy + a.busts * 500));
+    return list;
+  }
+
+  update(dt) {
+    if (this.bashCooldown > 0) this.bashCooldown -= dt;
+
+    if (this.game.player.emoteTimer > 0) {
+      this.game.player.emoteTimer -= dt;
+    }
+
+    if (!this.connected) return;
+
+    const now = performance.now();
+
+    // 1. Interpolate Remote Players & Check PvP / Co-op Collisions
+    for (const [id, rp] of this.remotePlayers.entries()) {
+      // Remove stale peers after 12 seconds of silence
+      if (now - rp.lastSeen > 12000) {
+        this.remotePlayers.delete(id);
+        this.game.ui.updateMultiplayerUI();
+        continue;
+      }
+
+      // Dead-reckoning + smooth lerp toward target position
+      rp.targetX += rp.vx * dt * 0.5;
+      rp.targetY += rp.vy * dt * 0.5;
+      const lerpFactor = Math.min(1, dt * 14);
+      rp.x += (rp.targetX - rp.x) * lerpFactor;
+      rp.y += (rp.targetY - rp.y) * lerpFactor;
+      rp.tailPhase += dt * (4 + rp.speed * 0.04);
+
+      if (rp.sirenWaveTimer > 0) rp.sirenWaveTimer -= dt;
+      if (rp.emoteTimer > 0) rp.emoteTimer -= dt;
+
+      // Check interactions with Local Player
+      const lp = this.game.player;
+      const dist = Math.hypot(lp.x - rp.x, lp.y - rp.y);
+
+      if (dist < lp.r + rp.r + 8 && Math.abs(lp.z - rp.z) < 22 && this.bashCooldown <= 0) {
+        // Case A: Co-op Syndicate — High-Five Speed Boost & Teammate Heal!
+        if (this.gameMode === 'coop' && this.playerRole === 'possum' && rp.role === 'possum') {
+          if (rp.hp < rp.maxHp * 0.85) {
+            this.bashCooldown = 2.0;
+            this.broadcastEvent('coop_revive', { targetId: rp.id });
+            this.game.entities.addFloatingText(rp.x, rp.y - 34, `💚 TEAMMATE HEALED!`, '#51cf66', 15);
+          }
+        }
+        // Case B: Turf War Versus — Scooter Bash rivals when boosting!
+        else if (this.gameMode === 'versus' && lp.boostActive) {
+          this.bashCooldown = 1.1;
+          const ang = Math.atan2(rp.y - lp.y, rp.x - lp.x);
+          this.broadcastEvent('pvp_bash', {
+            targetId: rp.id,
+            pushVx: Math.cos(ang) * 340,
+            pushVy: Math.sin(ang) * 340,
+            damage: 14
+          });
+          SFX.trashCrash();
+          this.game.entities.addParticles((lp.x + rp.x) / 2, (lp.y + rp.y) / 2, '#ffd43b', 14, 170);
+          this.game.entities.addFloatingText(rp.x, rp.y - 30, `💥 RIVAL SCOOTER BASH!`, '#ff922b', 16);
+        }
+        // Case C: Possums vs. Animal Control — Cop Player tackles Possum Player!
+        else if (this.playerRole === 'cop' && rp.role === 'possum' && !rp.isPlayingDead) {
+          this.bashCooldown = 1.0;
+          const ang = Math.atan2(rp.y - lp.y, rp.x - lp.x);
+          this.broadcastEvent('pvp_bash', {
+            targetId: rp.id,
+            pushVx: Math.cos(ang) * 320,
+            pushVy: Math.sin(ang) * 320,
+            damage: 22
+          });
+          lp.busts = (lp.busts || 0) + 1;
+          this.game.addShinies(35, rp.x, rp.y, '🚨');
+          SFX.trashCrash();
+          this.game.entities.addFloatingText(rp.x, rp.y - 34, `🚨 BUSTED ${rp.name}! +35✨`, '#339af0', 17);
+        }
+      }
+    }
+
+    // 2. Broadcast Local Player State at 20 Hz
+    this.syncAccumulator += dt;
+    if (this.syncAccumulator >= this.syncInterval) {
+      this.syncAccumulator = 0;
+      const p = this.game.player;
+      this.broadcastRaw({
+        type: 'state',
+        senderId: this.localId,
+        name: this.playerName,
+        color: this.playerColor,
+        role: this.playerRole,
+        copVehicle: this.copVehicle,
+        platformIcon: this.getPlatformShortIcon(),
+        x: Math.round(p.x * 10) / 10,
+        y: Math.round(p.y * 10) / 10,
+        vx: Math.round(p.vx),
+        vy: Math.round(p.vy),
+        z: Math.round(p.z),
+        angle: +(p.angle.toFixed(3)),
+        speed: Math.round(p.speed),
+        airTrickAngle: +(p.airTrickAngle.toFixed(2)),
+        deckSpinAngle: +(p.deckSpinAngle.toFixed(2)),
+        isPlayingDead: p.isPlayingDead,
+        boostActive: p.boostActive,
+        hp: Math.round(p.hp),
+        maxHp: p.maxHp,
+        shinies: this.game.shinies,
+        infamy: this.game.infamy,
+        busts: p.busts || 0,
+        upgrades: p.upgrades
+      });
+    }
+  }
+
+  drawRemotePlayers(ctx, time) {
+    for (const rp of this.remotePlayers.values()) {
+      ctx.save();
+      ctx.translate(rp.x, rp.y);
+
+      // Siren Shockwave Ring if Cop Player just triggered Siren Blast
+      if (rp.sirenWaveTimer > 0) {
+        const progress = 1 - rp.sirenWaveTimer / 0.65;
+        ctx.strokeStyle = `rgba(51, 154, 240, ${1 - progress})`;
+        ctx.lineWidth = 5;
+        ctx.beginPath();
+        ctx.arc(0, 0, 25 + progress * 165, 0, Math.PI * 2);
+        ctx.stroke();
+      }
+
+      if (rp.role === 'cop') {
+        this.drawCopCharacter(ctx, rp, time);
+      } else {
+        this.drawPossumCharacter(ctx, rp, time);
+      }
+
+      // Draw Floating Name Tag, Platform Icon & Health Bar above Remote Player
+      ctx.save();
+      ctx.translate(0, -rp.z - 34);
+
+      const badgeText = `${rp.platformIcon || '🌐'} ${rp.name}`;
+      ctx.font = "900 11px 'Segoe UI', sans-serif";
+      ctx.textAlign = 'center';
+      const tw = ctx.measureText(badgeText).width + 12;
+
+      ctx.fillStyle = 'rgba(15, 18, 24, 0.85)';
+      ctx.strokeStyle = rp.role === 'cop' ? '#339af0' : rp.color;
+      ctx.lineWidth = 2;
+      ctx.fillRect(-tw / 2, -14, tw, 17);
+      ctx.strokeRect(-tw / 2, -14, tw, 17);
+
+      ctx.fillStyle = '#fff';
+      ctx.fillText(badgeText, 0, -2);
+
+      // Mini HP bar
+      const hpPct = Math.max(0, Math.min(1, rp.hp / (rp.maxHp || 100)));
+      ctx.fillStyle = '#111';
+      ctx.fillRect(-20, 5, 40, 5);
+      ctx.fillStyle = rp.role === 'cop' ? '#339af0' : '#51cf66';
+      ctx.fillRect(-19, 6, 38 * hpPct, 3);
+
+      ctx.restore();
+      ctx.restore();
+    }
+  }
+
+  drawCopCharacter(ctx, unit, time) {
+    ctx.save();
+    ctx.translate(0, -(unit.z || 0));
+    ctx.rotate(unit.angle);
+
+    const vType = unit.copVehicle || 'catcher';
+    if (vType === 'swatvan') {
+      ctx.fillStyle = 'rgba(0,0,0,0.4)';
+      ctx.fillRect(-26, -15, 56, 36);
+      ctx.fillStyle = '#212529';
+      ctx.strokeStyle = '#111';
+      ctx.lineWidth = 3;
+      ctx.fillRect(-28, -18, 56, 36);
+      ctx.strokeRect(-28, -18, 56, 36);
+
+      ctx.fillStyle = '#e03131';
+      ctx.fillRect(-10, -18, 22, 36);
+
+      const flashRed = Math.floor(time * 14) % 2 === 0;
+      ctx.fillStyle = flashRed ? '#ff4d4f' : '#339af0';
+      ctx.fillRect(4, -14, 7, 12);
+      ctx.fillStyle = flashRed ? '#339af0' : '#ff4d4f';
+      ctx.fillRect(4, 2, 7, 12);
+    } else if (vType === 'k9') {
+      ctx.fillStyle = '#8b5a2b';
+      ctx.strokeStyle = '#111';
+      ctx.lineWidth = 2.5;
+      ctx.beginPath();
+      ctx.ellipse(0, 0, 16, 10, 0, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.stroke();
+      ctx.fillStyle = '#339af0';
+      ctx.fillRect(-5, -9, 8, 18);
+      ctx.fillStyle = '#5c3a21';
+      ctx.beginPath();
+      ctx.arc(13, 0, 6.5, 0, Math.PI * 2);
+      ctx.fill();
+    } else {
+      // Net Catcher Officer
+      ctx.fillStyle = '#1c7ed6';
+      ctx.strokeStyle = '#111';
+      ctx.lineWidth = 2.5;
+      ctx.beginPath();
+      ctx.arc(0, 0, 15, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.stroke();
+
+      ctx.strokeStyle = '#ced4da';
+      ctx.lineWidth = 3;
+      ctx.beginPath();
+      ctx.moveTo(4, 8);
+      ctx.lineTo(24, 14);
+      ctx.stroke();
+
+      ctx.strokeStyle = '#63e6be';
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.arc(28, 15, 8, 0, Math.PI * 2);
+      ctx.stroke();
+    }
+
+    if (unit.boostActive) {
+      ctx.fillStyle = '#339af0';
+      ctx.beginPath();
+      ctx.moveTo(-22, -5);
+      ctx.lineTo(-36 - Math.random() * 8, 0);
+      ctx.lineTo(-22, 5);
+      ctx.fill();
+    }
+    ctx.restore();
+  }
+
+  drawPossumCharacter(ctx, rp, time) {
+    const shadowScale = Math.max(0.45, 1 - (rp.z || 0) / 220);
+    ctx.save();
+    ctx.scale(shadowScale, shadowScale);
+    ctx.fillStyle = 'rgba(0, 0, 0, 0.42)';
+    ctx.beginPath();
+    ctx.ellipse(0, 5, 22, 11, rp.angle, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.restore();
+
+    ctx.save();
+    ctx.translate(0, -(rp.z || 0));
+    ctx.rotate(rp.angle + (rp.airTrickAngle || 0));
+
+    if (rp.isPlayingDead) {
+      ctx.fillStyle = '#adb5bd';
+      ctx.fillRect(-16, 12, 32, 6);
+      ctx.strokeStyle = 'rgba(204, 93, 232, 0.55)';
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.arc(0, 0, 22 + Math.sin(time * 8) * 4, 0, Math.PI * 2);
+      ctx.stroke();
+
+      ctx.fillStyle = '#868e96';
+      ctx.strokeStyle = '#111';
+      ctx.lineWidth = 2.5;
+      ctx.beginPath();
+      ctx.ellipse(0, 0, 17, 11, 0, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.stroke();
+
+      ctx.fillStyle = '#f1f3f5';
+      ctx.beginPath();
+      ctx.arc(13, 0, 8, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.restore();
+      return;
+    }
+
+    // Scooter deck
+    ctx.save();
+    ctx.rotate(rp.deckSpinAngle || 0);
+    const deckColors = ['#ced4da', '#fcc419', '#fa5252', '#63e6be'];
+    const deckLvl = rp.upgrades ? rp.upgrades.deck : 0;
+    ctx.fillStyle = '#212529';
+    ctx.fillRect(15, -5, 8, 10);
+    ctx.fillRect(-21, -5, 8, 10);
+    ctx.fillStyle = deckColors[deckLvl] || '#ced4da';
+    ctx.strokeStyle = '#111';
+    ctx.lineWidth = 2.5;
+    ctx.fillRect(-19, -7, 38, 14);
+    ctx.strokeRect(-19, -7, 38, 14);
+
+    if (rp.boostActive) {
+      ctx.fillStyle = '#ffd43b';
+      ctx.beginPath();
+      ctx.moveTo(-25, -5);
+      ctx.lineTo(-39 - Math.random() * 10, 0);
+      ctx.lineTo(-25, 5);
+      ctx.fill();
+    }
+    ctx.restore();
+
+    // Tail
+    const tailWag = Math.sin(rp.tailPhase || 0) * 7;
+    ctx.strokeStyle = '#f783ac';
+    ctx.lineWidth = 4.5;
+    ctx.lineCap = 'round';
+    ctx.beginPath();
+    ctx.moveTo(-11, 0);
+    ctx.quadraticCurveTo(-22, tailWag * 0.6, -31, tailWag);
+    ctx.stroke();
+
+    // Torso
+    ctx.fillStyle = '#868e96';
+    ctx.strokeStyle = '#111';
+    ctx.lineWidth = 2.5;
+    ctx.beginPath();
+    ctx.ellipse(-2, 0, 13, 10, 0, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.stroke();
+
+    // Custom Bandana Color
+    ctx.fillStyle = rp.color || '#15aabf';
+    ctx.beginPath();
+    ctx.arc(3, 0, 8, 0, Math.PI * 2);
+    ctx.fill();
+
+    // Handlebars
+    ctx.strokeStyle = '#dee2e6';
+    ctx.lineWidth = 3.5;
+    ctx.beginPath();
+    ctx.moveTo(14, -12);
+    ctx.lineTo(14, 12);
+    ctx.stroke();
+
+    // Head
+    ctx.fillStyle = '#f8f9fa';
+    ctx.strokeStyle = '#111';
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.moveTo(2, -8);
+    ctx.lineTo(19, 0);
+    ctx.lineTo(2, 8);
+    ctx.closePath();
+    ctx.fill();
+    ctx.stroke();
+
+    ctx.fillStyle = '#ff8787';
+    ctx.beginPath();
+    ctx.arc(19, 0, 3, 0, Math.PI * 2);
+    ctx.fill();
+
+    ctx.fillStyle = '#111';
+    ctx.beginPath();
+    ctx.arc(10, -3.5, 2, 0, Math.PI * 2);
+    ctx.arc(10, 3.5, 2, 0, Math.PI * 2);
+    ctx.fill();
+
+    ctx.restore();
+  }
+}
+

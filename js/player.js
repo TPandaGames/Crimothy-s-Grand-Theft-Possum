@@ -1,9 +1,21 @@
-// js/player.js — Crimothy the Scooter-Riding Possum: Physics, Tricks, Upgrades, Vandalism & Play Dead
+// js/player.js — Crimothy the Scooter-Riding Possum & Playable Animal Control Units:
+// Physics, Tricks, Upgrades, Vandalism, Play Dead & Cross-Platform Multiplayer Sync
 
-class Player {
+import { SFX } from './audio.js';
+import { CONSTANTS } from './constants.js';
+
+export class Player {
   constructor(x, y) {
     this.spawnX = x;
     this.spawnY = y;
+    this.role = 'possum';       // 'possum' | 'cop'
+    this.copVehicle = 'catcher'; // 'catcher' | 'k9' | 'swatvan'
+    this.customColor = '#e03131';
+    this.busts = 0;
+    this.sirenWaveTimer = 0;
+    this.emoteText = '';
+    this.emoteTimer = 0;
+
     this.reset();
 
     // Persistent Upgrades
@@ -24,7 +36,7 @@ class Player {
     this.vy = 0;
     this.speed = 0;
     this.angle = 0;
-    this.r = 16;
+    this.r = this.role === 'cop' && this.copVehicle === 'swatvan' ? 24 : 16;
 
     // Jump & Air Trick state
     this.z = 0;
@@ -34,32 +46,52 @@ class Player {
     this.tricksInAir = [];
     this.trickCooldown = 0;
 
-    // Health, Boost & Play Dead meters
-    this.maxHp = 100;
-    this.hp = 100;
+    // Health, Boost & Play Dead / Siren meters
+    this.maxHp = this.role === 'cop' && this.copVehicle === 'swatvan' ? 150 : CONSTANTS.PLAYER.MAX_HP;
+    this.hp = this.maxHp;
     this.invulnTimer = 0;
 
-    this.maxBoost = 100;
-    this.boost = 100;
+    this.maxBoost = CONSTANTS.PLAYER.MAX_BOOST;
+    this.boost = CONSTANTS.PLAYER.MAX_BOOST;
     this.boostActive = false;
 
-    this.maxPlayDead = 100;
-    this.playDeadEnergy = 100;
+    this.maxPlayDead = CONSTANTS.PLAYER.MAX_PLAY_DEAD;
+    this.playDeadEnergy = CONSTANTS.PLAYER.MAX_PLAY_DEAD;
     this.isPlayingDead = false;
     this.playDeadCooldown = 0;
+    this.netFireCooldown = 0;
 
     this.tailPhase = 0;
   }
 
   getMaxSpeed() {
-    return 295 + this.upgrades.wheels * 34 + (this.boostActive ? 165 + this.upgrades.rocket * 28 : 0);
+    let base = CONSTANTS.PLAYER.BASE_SPEED;
+    if (this.role === 'cop') {
+      base = this.copVehicle === 'k9' ? 350 : this.copVehicle === 'swatvan' ? 335 : 320;
+    }
+    return base + this.upgrades.wheels * 34 + (this.boostActive ? 165 + this.upgrades.rocket * 28 : 0);
   }
 
   getMagnetRadius() {
-    return 65 + this.upgrades.magnet * 45;
+    return CONSTANTS.PLAYER.BASE_MAGNET_RADIUS + this.upgrades.magnet * 45;
   }
 
   togglePlayDead(entities, game) {
+    // If playing as Animal Control in Cops & Robbers mode: Q triggers SIREN SHOCKWAVE / K-9 BARK!
+    if (this.role === 'cop') {
+      if (this.playDeadEnergy < 35 || this.playDeadCooldown > 0) return;
+      this.playDeadEnergy = Math.max(0, this.playDeadEnergy - 40);
+      this.playDeadCooldown = 1.4;
+      this.sirenWaveTimer = 0.65;
+      SFX.sirenchirp();
+      entities.addParticles(this.x, this.y, '#339af0', 22, 210, 6);
+      entities.addFloatingText(this.x, this.y - 36, '🚨 SIREN SHOCKWAVE!', '#339af0', 17);
+      if (game && game.network && game.network.connected) {
+        game.network.broadcastEvent('siren_blast', { x: this.x, y: this.y });
+      }
+      return;
+    }
+
     if (this.isPlayingDead) {
       this.isPlayingDead = false;
       entities.addFloatingText(this.x, this.y - 30, "🦝 ALIVE & KICKIN'!", "#51cf66", 15);
@@ -71,7 +103,7 @@ class Player {
     this.vx *= 0.25;
     this.vy *= 0.25;
     this.speed *= 0.25;
-    window.SFX.playDeadFlop();
+    SFX.playDeadFlop();
     entities.addFloatingText(this.x, this.y - 34, "💀 PLAYING DEAD... (SHHH!)", "#cc5de8", 17);
     entities.addParticles(this.x, this.y, "#cc5de8", 10, 90);
 
@@ -93,19 +125,20 @@ class Player {
     if (this.z === 0) {
       this.vz = 265 + this.upgrades.deck * 22;
       this.tricksInAir = [];
-      window.SFX.bunnyHop();
+      SFX.bunnyHop();
       entities.addParticles(this.x, this.y, "#ced4da", 6, 70, 4);
-    } else {
+    } else if (this.role === 'possum') {
       // Mid-air trick when pressing Space again in air!
       this.performAirTrick('TAILWHIP', entities);
     }
   }
 
   performAirTrick(trickName, entities) {
+    if (this.role === 'cop') return;
     if (this.z < 12 || this.trickCooldown > 0) return;
     this.trickCooldown = 0.28;
     this.tricksInAir.push(trickName);
-    window.SFX.trickSpin();
+    SFX.trickSpin();
 
     if (trickName === 'TAILWHIP' || trickName === 'KICKFLIP') {
       this.deckSpinAngle += Math.PI * 2;
@@ -129,16 +162,48 @@ class Player {
       return;
     }
 
+    // If playing as Animal Control: [E] fires a high-velocity Capture Net!
+    if (this.role === 'cop') {
+      if (this.netFireCooldown > 0) return;
+      this.netFireCooldown = 0.55;
+      const netVx = Math.cos(this.angle) * 460 + this.vx * 0.35;
+      const netVy = Math.sin(this.angle) * 460 + this.vy * 0.35;
+      const netX = this.x + Math.cos(this.angle) * 24;
+      const netY = this.y + Math.sin(this.angle) * 24;
+
+      entities.nets.push({
+        x: netX,
+        y: netY,
+        vx: netVx,
+        vy: netVy,
+        r: 18,
+        life: 1.25,
+        ownerId: game.network ? game.network.localId : 'local_cop',
+        ownerName: game.network ? game.network.playerName : 'OFFICER'
+      });
+
+      SFX.sprayCan();
+      entities.addFloatingText(this.x, this.y - 32, '🕸️ CAPTURE NET FIRED!', '#63e6be', 15);
+      if (game.network && game.network.connected) {
+        game.network.broadcastEvent('net_fired', { x: netX, y: netY, vx: netVx, vy: netVy });
+      }
+      return;
+    }
+
     // 2. Check nearby Graffiti Walls
-    for (const g of world.graffitiSpots) {
+    for (let i = 0; i < world.graffitiSpots.length; i++) {
+      const g = world.graffitiSpots[i];
       if (!g.tagged && Math.hypot(this.x - g.x, this.y - g.y) < 68) {
         g.tagged = true;
-        window.SFX.sprayCan();
+        SFX.sprayCan();
         entities.addParticles(g.x, g.y, "#cc5de8", 22, 160, 6);
         entities.addParticles(g.x, g.y, "#63e6be", 16, 140, 5);
         const reward = 35 + this.upgrades.spray * 15;
         entities.addFloatingText(g.x, g.y - 30, `🎨 TAGGED "${g.slogan}"! +${reward}✨`, "#cc5de8", 17);
         game.recordCrime(`Tagged Wall: "${g.slogan}" 🎨`, reward, 18, 'graffiti');
+        if (game.network && game.network.connected) {
+          game.network.broadcastEvent('graffiti_tag', { spotIndex: i });
+        }
         // Respawn wall tag after 45s
         setTimeout(() => { g.tagged = false; }, 45000);
         return;
@@ -146,21 +211,25 @@ class Player {
     }
 
     // 3. Check nearby un-looted Dumpsters
-    for (const p of world.props) {
+    for (let i = 0; i < world.props.length; i++) {
+      const p = world.props[i];
       if (p.type === 'dumpster' && !p.looted && Math.hypot(this.x - p.x, this.y - p.y) < 66) {
         p.looted = true;
         p.respawnTimer = 35;
-        window.SFX.trashCrash();
+        SFX.trashCrash();
         entities.spawnLoot(p.x, p.y, 6 + this.upgrades.magnet * 2, 7);
         entities.addParticles(p.x, p.y, "#51cf66", 18, 170, 6);
         entities.addFloatingText(p.x, p.y - 30, "🗑️ DUMPSTER JACKPOT!", "#51cf66", 17);
         game.recordCrime("Rummaged Commercial Dumpster 🗑️", 20, 10, 'trash');
+        if (game.network && game.network.connected) {
+          game.network.broadcastEvent('prop_smash', { propIndex: i });
+        }
         return;
       }
     }
 
     // 4. Otherwise: Possum Hiss & Spray-Paint Cloud (spooks nearby pedestrians into dropping loot & blinds close cops!)
-    window.SFX.possumHiss();
+    SFX.possumHiss();
     const range = 105 + this.upgrades.spray * 28;
     entities.addParticles(this.x, this.y, "#cc5de8", 16, 180, 6);
     entities.addFloatingText(this.x, this.y - 32, "😾 HISS & SPRAY!", "#ff8787", 15);
@@ -184,7 +253,7 @@ class Player {
     this.hp = Math.max(0, this.hp - amount);
     this.invulnTimer = 0.85;
     this.isPlayingDead = false;
-    window.SFX.hitDamage();
+    SFX.hitDamage();
     game.triggerScreenShake(9, 0.25);
     game.entities.addParticles(this.x, this.y, "#ff6b6b", 14, 160);
     game.entities.addFloatingText(this.x, this.y - 30, `💥 -${amount} HP (${sourceLabel})`, "#ff6b6b", 15);
@@ -199,6 +268,8 @@ class Player {
     if (this.invulnTimer > 0) this.invulnTimer -= dt;
     if (this.trickCooldown > 0) this.trickCooldown -= dt;
     if (this.playDeadCooldown > 0) this.playDeadCooldown -= dt;
+    if (this.netFireCooldown > 0) this.netFireCooldown -= dt;
+    if (this.sirenWaveTimer > 0) this.sirenWaveTimer -= dt;
 
     const touch = game.touchState || { joyActive: false, joyMag: 0, joyAngle: 0, boostPressed: false };
 
@@ -216,7 +287,8 @@ class Player {
       this.speed = Math.hypot(this.vx, this.vy);
 
       // Wake up if energy runs out or player presses gas/jump or pushes touch joystick
-      if (this.playDeadEnergy <= 0 || keys['KeyW'] || keys['ArrowUp'] || (touch.joyActive && touch.joyMag > 0.45)) {
+      const upKey = this.isPlayer2 ? keys['ArrowUp'] : keys['KeyW'];
+      if (this.playDeadEnergy <= 0 || upKey || (touch.joyActive && touch.joyMag > 0.45 && !this.isPlayer2)) {
         this.isPlayingDead = false;
         this.playDeadCooldown = 1.2;
         entities.addFloatingText(this.x, this.y - 28, "🛴 BACK ON THE DECK!", "#ffd43b", 14);
@@ -228,33 +300,35 @@ class Player {
 
     // Steering (Keyboard or Virtual Analog Thumbstick)
     const turnSpeed = 3.5 + this.upgrades.wheels * 0.25;
-    if (touch.joyActive && touch.joyMag > 0.14) {
+    if (touch.joyActive && touch.joyMag > 0.14 && !this.isPlayer2) {
       const angleDiff = Math.atan2(
         Math.sin(touch.joyAngle - this.angle),
         Math.cos(touch.joyAngle - this.angle)
       );
       this.angle += angleDiff * Math.min(1, dt * (turnSpeed * 2.4));
     } else {
-      if (keys['KeyA'] || keys['ArrowLeft']) {
-        this.angle -= turnSpeed * dt;
-      }
-      if (keys['KeyD'] || keys['ArrowRight']) {
-        this.angle += turnSpeed * dt;
+      if (this.isPlayer2) {
+        if (keys['ArrowLeft']) this.angle -= turnSpeed * dt;
+        if (keys['ArrowRight']) this.angle += turnSpeed * dt;
+      } else {
+        if (keys['KeyA'] || keys['ArrowLeft']) this.angle -= turnSpeed * dt;
+        if (keys['KeyD'] || keys['ArrowRight']) this.angle += turnSpeed * dt;
       }
     }
 
     // Rocket Boost (Shift or Touch Boost Button)
-    if ((keys['ShiftLeft'] || keys['ShiftRight'] || touch.boostPressed) && this.boost > 5) {
+    const boostKey = this.isPlayer2 ? keys['ShiftRight'] : (keys['ShiftLeft'] || keys['ShiftRight']);
+    if ((boostKey || (touch.boostPressed && !this.isPlayer2)) && this.boost > 5) {
       this.boostActive = true;
       const drain = Math.max(12, 26 - this.upgrades.rocket * 5);
       this.boost = Math.max(0, this.boost - drain * dt);
       if (Math.random() < 0.45) {
-        window.SFX.boostFlame();
+        SFX.boostFlame();
       }
       // Flame trail particles & road scorch
       const backX = this.x - Math.cos(this.angle) * 20;
       const backY = this.y - Math.sin(this.angle) * 20;
-      entities.addParticles(backX, backY, "#ff922b", 2, 85, 5);
+      entities.addParticles(backX, backY, this.role === 'cop' ? "#339af0" : "#ff922b", 2, 85, 5);
       if (this.z === 0) {
         world.addSkidMark(backX, backY, this.angle, true);
       }
@@ -267,14 +341,17 @@ class Player {
     const maxSpd = this.getMaxSpeed();
     const accel = this.boostActive ? 540 : 340 + this.upgrades.wheels * 35;
 
-    if (touch.joyActive && touch.joyMag > 0.14) {
+    const gasKey = this.isPlayer2 ? keys['ArrowUp'] : (keys['KeyW'] || (!game.player2 && keys['ArrowUp']));
+    const brakeKey = this.isPlayer2 ? keys['ArrowDown'] : (keys['KeyS'] || (!game.player2 && keys['ArrowDown']));
+
+    if (touch.joyActive && touch.joyMag > 0.14 && !this.isPlayer2) {
       const throttleMult = Math.min(1, touch.joyMag);
       this.vx += Math.cos(this.angle) * accel * throttleMult * dt;
       this.vy += Math.sin(this.angle) * accel * throttleMult * dt;
-    } else if (keys['KeyW'] || keys['ArrowUp'] || this.boostActive) {
+    } else if (gasKey || this.boostActive) {
       this.vx += Math.cos(this.angle) * accel * dt;
       this.vy += Math.sin(this.angle) * accel * dt;
-    } else if (keys['KeyS'] || keys['ArrowDown']) {
+    } else if (brakeKey) {
       this.vx -= Math.cos(this.angle) * (accel * 0.75) * dt;
       this.vy -= Math.sin(this.angle) * (accel * 0.75) * dt;
     }
@@ -313,18 +390,18 @@ class Player {
       this.speed = maxSpd;
     }
 
-    // Move & Collide with Buildings and Locked District Barricades
+    // Move & Collide with Buildings and Locked District Barricades (Animal Control bypasses barricades!)
     const nextX = Math.max(25, Math.min(world.width - 25, this.x + this.vx * dt));
     const nextY = Math.max(25, Math.min(world.height - 25, this.y + this.vy * dt));
 
-    const lockedX = world.isPositionLocked(nextX, this.y);
-    const lockedY = world.isPositionLocked(this.x, nextY);
+    const lockedX = this.role === 'cop' ? null : world.isPositionLocked(nextX, this.y);
+    const lockedY = this.role === 'cop' ? null : world.isPositionLocked(this.x, nextY);
 
     if (lockedX) {
       this.vx *= -0.65;
       if (!this.barricadeMsgCooldown || this.barricadeMsgCooldown <= 0) {
         this.barricadeMsgCooldown = 1.2;
-        window.SFX.barricadeBounce();
+        SFX.barricadeBounce();
         entities.addParticles(this.x, this.y, lockedX.color, 10, 120);
         entities.addFloatingText(
           this.x,
@@ -344,7 +421,7 @@ class Player {
       this.vy *= -0.65;
       if (!this.barricadeMsgCooldown || this.barricadeMsgCooldown <= 0) {
         this.barricadeMsgCooldown = 1.2;
-        window.SFX.barricadeBounce();
+        SFX.barricadeBounce();
         entities.addParticles(this.x, this.y, lockedY.color, 10, 120);
         entities.addFloatingText(
           this.x,
@@ -370,9 +447,11 @@ class Player {
       this.vz -= 640 * dt; // Gravity
 
       // Check air trick keys (Z / X / J / K)
-      if (keys['KeyZ'] || keys['KeyJ']) {
+      const flipKey = this.isPlayer2 ? keys['Numpad4'] : (keys['KeyZ'] || keys['KeyJ']);
+      const spinKey = this.isPlayer2 ? keys['Numpad5'] : (keys['KeyX'] || keys['KeyK']);
+      if (flipKey) {
         this.performAirTrick('KICKFLIP', entities);
-      } else if (keys['KeyX'] || keys['KeyK']) {
+      } else if (spinKey) {
         this.performAirTrick('360 POSSUM SPIN', entities);
       }
 
@@ -394,7 +473,7 @@ class Player {
         if (this.tricksInAir.length > 0) {
           const count = this.tricksInAir.length;
           const reward = count * 15;
-          window.SFX.trickLand();
+          SFX.trickLand();
           entities.addParticles(this.x, this.y, "#63e6be", 14, 150);
           entities.addFloatingText(this.x, this.y - 34, `🔥 LANDED ${count}x TRICK COMBO! +${reward}✨`, "#fcc419", 17);
           game.recordCrime(`Landed ${this.tricksInAir.join(' + ')} 🛴`, reward, 4, 'trick');
@@ -412,7 +491,7 @@ class Player {
       for (const r of world.ramps) {
         if (this.x > r.x && this.x < r.x + r.w && this.y > r.y && this.y < r.y + r.h) {
           this.vz = 320 + Math.min(140, this.speed * 0.35);
-          window.SFX.bunnyHop();
+          SFX.bunnyHop();
           entities.addFloatingText(this.x, this.y - 25, `🚀 ${r.label} AIR!`, "#ffd43b", 15);
           break;
         }
@@ -420,26 +499,32 @@ class Player {
     }
 
     // Check Destructible Props (Trash Cans, Mailboxes, Fire Hydrants, Gnomes)
-    for (const p of world.props) {
+    for (let i = 0; i < world.props.length; i++) {
+      const p = world.props[i];
       if (p.smashed && p.type === 'hydrant' && p.geyserTimer > 0) {
         // Riding over an active hydrant geyser launches Crimothy sky-high!
         if (Math.hypot(this.x - p.x, this.y - p.y) < 28 && this.z < 15) {
           this.vz = 410;
-          window.SFX.bunnyHop();
+          SFX.bunnyHop();
           entities.addFloatingText(this.x, this.y - 30, "💦 GEYSER MEGA-LAUNCH!", "#74c0fc", 17);
         }
       }
+
+      if (this.role === 'cop') continue; // Animal control doesn't vandalize city props
 
       if (p.type === 'dumpster') {
         if (!p.looted && Math.hypot(this.x - p.x, this.y - p.y) < this.r + p.r + 4 && this.z < 20) {
           p.looted = true;
           p.respawnTimer = 30;
-          window.SFX.trashCrash();
+          SFX.trashCrash();
           game.triggerScreenShake(5, 0.14);
           entities.spawnLoot(p.x, p.y, 5 + this.upgrades.magnet * 2, 7);
           entities.addParticles(p.x, p.y, "#51cf66", 16, 165, 6);
           entities.addFloatingText(p.x, p.y - 28, "🗑️ DUMPSTER RAIDED!", "#51cf66", 16);
           game.recordCrime("Raided Alley Dumpster 🗑️", 20, 9, 'trash');
+          if (game.network && game.network.connected) {
+            game.network.broadcastEvent('prop_smash', { propIndex: i });
+          }
         }
         continue;
       }
@@ -454,8 +539,11 @@ class Player {
         p.vx = this.vx * 1.1;
         p.vy = this.vy * 1.1;
 
-        window.SFX.trashCrash();
+        SFX.trashCrash();
         game.triggerScreenShake(6, 0.16);
+        if (game.network && game.network.connected) {
+          game.network.broadcastEvent('prop_smash', { propIndex: i, vx: p.vx, vy: p.vy });
+        }
 
         if (p.type === 'trashcan') {
           entities.spawnLoot(p.x, p.y, 3, 5);
@@ -502,6 +590,23 @@ class Player {
     ctx.save();
     ctx.translate(this.x, this.y);
 
+    // Siren Shockwave Ring if Animal Control player triggered Q
+    if (this.sirenWaveTimer > 0) {
+      const progress = 1 - this.sirenWaveTimer / 0.65;
+      ctx.strokeStyle = `rgba(51, 154, 240, ${1 - progress})`;
+      ctx.lineWidth = 5;
+      ctx.beginPath();
+      ctx.arc(0, 0, 25 + progress * 165, 0, Math.PI * 2);
+      ctx.stroke();
+    }
+
+    // If playing as Animal Control in Cops & Robbers mode
+    if (this.role === 'cop' && window.game && window.game.network) {
+      window.game.network.drawCopCharacter(ctx, this, time);
+      ctx.restore();
+      return;
+    }
+
     // 1. Ground Shadow (scales slightly when jumping high in the air)
     const shadowScale = Math.max(0.45, 1 - this.z / 220);
     ctx.save();
@@ -535,7 +640,7 @@ class Player {
       ctx.stroke();
 
       // Possum flopped on back, four little pink paws sticking up in the air!
-      ctx.fillStyle = "#868e96";
+      ctx.fillStyle = this.isPlayer2 ? "#a08696" : "#868e96";
       ctx.strokeStyle = "#111";
       ctx.lineWidth = 2.5;
       ctx.beginPath();
@@ -637,8 +742,8 @@ class Player {
     ctx.quadraticCurveTo(-22, tailWag * 0.6, -31, tailWag);
     ctx.stroke();
 
-    // Torso (fluffy grey-silver possum fur + red punk bandana)
-    ctx.fillStyle = "#868e96";
+    // Torso (fluffy grey-silver possum fur + custom punk bandana)
+    ctx.fillStyle = this.isPlayer2 ? "#a08696" : "#868e96";
     ctx.strokeStyle = "#111";
     ctx.lineWidth = 2.5;
     ctx.beginPath();
@@ -647,7 +752,7 @@ class Player {
     ctx.stroke();
 
     // Punk Bandana / Vest
-    ctx.fillStyle = "#e03131";
+    ctx.fillStyle = this.isPlayer2 ? "#339af0" : (this.customColor || "#e03131");
     ctx.beginPath();
     ctx.arc(3, 0, 8, 0, Math.PI * 2);
     ctx.fill();
@@ -659,8 +764,8 @@ class Player {
     ctx.moveTo(14, -12);
     ctx.lineTo(14, 12);
     ctx.stroke();
-    // Red Handlebar Grips
-    ctx.strokeStyle = "#fa5252";
+    // Handlebar Grips
+    ctx.strokeStyle = this.isPlayer2 ? "#339af0" : (this.customColor || "#fa5252");
     ctx.lineWidth = 4.5;
     ctx.beginPath();
     ctx.moveTo(14, -13);
@@ -704,6 +809,3 @@ class Player {
     ctx.restore();
   }
 }
-
-window.Player = Player;
-

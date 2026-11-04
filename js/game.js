@@ -1,26 +1,50 @@
-// js/game.js — Main Game Loop, Camera, Wanted System, Combos, Bounties, Minimap & Upgrade Garage
+// js/game.js — Main Game Loop, Camera, Wanted System, Combos, Bounties, Minimap, Upgrade Garage & Cross-Platform Multiplayer
 
-class Game {
+import { World } from './world.js';
+import { EntityManager } from './entities.js';
+import { Player } from './player.js';
+import { SFX } from './audio.js';
+import { UIManager } from './ui.js';
+import { NetworkManager } from './network.js';
+import { CONSTANTS } from './constants.js';
+
+export class Game {
   constructor() {
+    window.game = this;
     this.canvas = document.getElementById('game-canvas');
     this.ctx = this.canvas.getContext('2d');
     this.minimapCanvas = document.getElementById('minimap-canvas');
     this.minimapCtx = this.minimapCanvas.getContext('2d');
 
-    this.resize();
-    window.addEventListener('resize', () => this.resize());
+    this.dpr = 1;
+    this.joyMaxRadius = 44;
 
-    this.world = new window.World();
-    this.entities = new window.EntityManager(this.world);
-    this.player = new window.Player(this.world.hideout.x, this.world.hideout.y);
+    this.world = new World();
+    this.entities = new EntityManager(this.world);
+    this.player = new Player(this.world.hideout.x, this.world.hideout.y);
+    this.player2 = null;
+
+    // Camera (with adaptive resolution zoom)
+    this.camera = {
+      x: this.player.x,
+      y: this.player.y,
+      zoom: 1,
+      viewW: window.innerWidth,
+      viewH: window.innerHeight,
+      shakeMag: 0,
+      shakeTimer: 0
+    };
 
     this.keys = {};
     this.paused = true; // Starts on title screen
     this.shopOpen = false;
+    this.mpModalOpen = false;
+    this.bustedModalOpen = false;
     this.time = 0;
 
     // Input Method Detection & Touch State
     this.inputMethod = 'keyboard'; // 'keyboard' | 'touch'
+    this.gamepadActive = false;
     this.manualInputOverride = false;
     this.touchState = {
       joyActive: false,
@@ -29,6 +53,13 @@ class Game {
       joyMag: 0,
       boostPressed: false
     };
+
+    this.resize();
+    window.addEventListener('resize', () => this.resize());
+    window.addEventListener('orientationchange', () => setTimeout(() => this.resize(), 120));
+    if (window.visualViewport) {
+      window.visualViewport.addEventListener('resize', () => this.resize());
+    }
 
     // Economy & Infamy
     this.shinies = 40; // Starter shinies so player can test upgrades early!
@@ -44,7 +75,7 @@ class Game {
     this.comboCount = 0;
     this.comboMultiplier = 1.0;
     this.comboTimer = 0;
-    this.comboMaxTimer = 5.5;
+    this.comboMaxTimer = CONSTANTS.GAME.COMBO_MAX_TIMER;
     this.comboBank = 0;
 
     // Active Street Challenges (Bounties)
@@ -56,14 +87,6 @@ class Game {
       { desc: "Survive & Escape a 2+ Star Chase (Play Dead [Q]!)", type: 'escape', progress: 0, target: 1, reward: 90 }
     ];
     this.currentBountyIdx = 0;
-
-    // Camera
-    this.camera = {
-      x: this.player.x,
-      y: this.player.y,
-      shakeMag: 0,
-      shakeTimer: 0
-    };
 
     // Upgrade Catalog for Big Sal's Dumpster Garage
     this.upgradeCatalog = [
@@ -117,21 +140,128 @@ class Game {
       }
     ];
 
+    this.sfx = SFX;
+    this.ui = new UIManager(this);
+    this.network = new NetworkManager(this);
+    this.player.customColor = this.network.playerColor;
+
     this.detectInitialInputMethod();
     this.bindEvents();
     this.bindTouchControls();
-    this.updateHUD();
-    this.renderShop();
+    this.ui.initMultiplayerControls();
+    this.ui.updateHUD();
+    this.ui.renderShop();
+    this.checkUrlInviteParams();
 
     this.lastFrameTime = performance.now();
     requestAnimationFrame((t) => this.loop(t));
   }
 
+  checkUrlInviteParams() {
+    try {
+      const params = new URLSearchParams(window.location.search);
+      const room = params.get('room');
+      const mode = params.get('mode');
+      if (mode && ['coop', 'versus', 'cops_robbers'].includes(mode)) {
+        this.network.setProfile({ gameMode: mode });
+      }
+      if (room) {
+        this.selectedPlayMode = 'online';
+        document.getElementById('title-mode-1p')?.classList.remove('active');
+        document.getElementById('title-mode-2p')?.classList.remove('active');
+        document.getElementById('title-mode-online')?.classList.add('active');
+        document.getElementById('title-online-box')?.classList.remove('hidden');
+
+        const titleInput = document.getElementById('title-mp-code');
+        const modalInput = document.getElementById('mp-room-input');
+        if (titleInput) titleInput.value = room.toUpperCase();
+        if (modalInput) modalInput.value = room.toUpperCase();
+
+        // Wait briefly for PeerJS script to finish defer load, then join
+        setTimeout(() => {
+          this.network.joinRoom(room);
+        }, 350);
+      }
+    } catch (_) {}
+  }
+
   resize() {
-    this.canvas.width = window.innerWidth;
-    this.canvas.height = window.innerHeight;
+    this.detectScreenResolution();
     if (!this.manualInputOverride) {
       this.detectInitialInputMethod();
+    }
+  }
+
+  detectScreenResolution() {
+    const vw = window.innerWidth || 1024;
+    const vh = window.innerHeight || 768;
+    const dpr = Math.min(2.5, window.devicePixelRatio || 1);
+    this.dpr = dpr;
+
+    // 1. Set High-DPI Canvas Buffer Size
+    this.canvas.width = Math.round(vw * dpr);
+    this.canvas.height = Math.round(vh * dpr);
+
+    // 2. Determine Orientation & Screen Size Tier
+    const isPortrait = vh > vw;
+    let tier = 'lg';
+    if (vw < 480 || vh < 430) {
+      tier = 'xs';
+    } else if (vw < 860 || vh < 560) {
+      tier = 'sm';
+    } else if (vw < 1280) {
+      tier = 'md';
+    } else if (vw >= 2000) {
+      tier = 'xl';
+    }
+    this.screenTier = tier;
+    this.isPortrait = isPortrait;
+
+    // Apply resolution tier & orientation classes to <body>
+    const b = document.body;
+    b.classList.remove('screen-xs', 'screen-sm', 'screen-md', 'screen-lg', 'screen-xl', 'orient-portrait', 'orient-landscape');
+    b.classList.add(`screen-${tier}`, isPortrait ? 'orient-portrait' : 'orient-landscape');
+
+    // 3. Compute Adaptive UI & Button Scale Factors + Minimap Size
+    const tierConfig = {
+      xs: { uiScale: 0.72, btnScale: 0.78, joySize: 106, knobSize: 44, pad: 8,  minimap: 84 },
+      sm: { uiScale: 0.84, btnScale: 0.88, joySize: 120, knobSize: 48, pad: 10, minimap: 106 },
+      md: { uiScale: 0.94, btnScale: 0.98, joySize: 134, knobSize: 54, pad: 12, minimap: 138 },
+      lg: { uiScale: 1.00, btnScale: 1.04, joySize: 142, knobSize: 56, pad: 14, minimap: 168 },
+      xl: { uiScale: 1.18, btnScale: 1.18, joySize: 164, knobSize: 64, pad: 18, minimap: 206 }
+    }[tier];
+
+    const rootStyle = document.documentElement.style;
+    rootStyle.setProperty('--ui-scale', tierConfig.uiScale);
+    rootStyle.setProperty('--btn-scale', tierConfig.btnScale);
+    rootStyle.setProperty('--joy-size', `${tierConfig.joySize}px`);
+    rootStyle.setProperty('--knob-size', `${tierConfig.knobSize}px`);
+    rootStyle.setProperty('--hud-pad', `${tierConfig.pad}px`);
+
+    this.joyMaxRadius = Math.round(tierConfig.joySize * 0.34);
+
+    if (this.minimapCanvas) {
+      this.minimapCanvas.width = tierConfig.minimap;
+      this.minimapCanvas.height = tierConfig.minimap;
+    }
+
+    // 4. Compute Adaptive Camera Zoom based on Screen Resolution
+    const baseZoom = isPortrait
+      ? Math.min(vw / 560, vh / 860)
+      : Math.min(vw / 1280, vh / 740);
+    const zoom = Math.max(0.62, Math.min(1.45, +baseZoom.toFixed(2)));
+
+    if (this.camera) {
+      this.camera.zoom = zoom;
+      this.camera.viewW = vw / zoom;
+      this.camera.viewH = vh / zoom;
+    }
+
+    // 5. Update Resolution Label on Title Screen
+    const resLabel = document.getElementById('detected-resolution-label');
+    if (resLabel) {
+      resLabel.textContent =
+        `📐 SCREEN: ${vw}×${vh} (${dpr.toFixed(1)}x DPI) • TIER: ${tier.toUpperCase()} ${isPortrait ? 'PORTRAIT' : 'LANDSCAPE'} • ZOOM: ${zoom}x`;
     }
   }
 
@@ -222,6 +352,11 @@ class Game {
   bindEvents() {
     // Auto-detect physical keyboard usage
     window.addEventListener('keydown', (e) => {
+      // Do not intercept keys when typing in room code or callsign input
+      if (e.target && (e.target.tagName === 'INPUT' || e.target.tagName === 'SELECT')) {
+        return;
+      }
+
       if (!this.manualInputOverride && this.inputMethod !== 'keyboard') {
         this.setInputMethod('keyboard', false);
       }
@@ -242,6 +377,25 @@ class Game {
         this.player.togglePlayDead(this.entities, this);
       } else if (e.code === 'KeyE') {
         this.player.performActionCrime(this.world, this.entities, this);
+      } else if (e.code === 'Digit1') {
+        this.network.sendEmote('😾 HISS!!');
+      } else if (e.code === 'Digit2') {
+        this.network.sendEmote('🍕 PIZZA HERE!');
+      } else if (e.code === 'Digit3') {
+        this.network.sendEmote('🚨 COPS INCOMING!');
+      } else if (e.code === 'Digit4') {
+        this.network.sendEmote('🛴 SICK TRICK!');
+      }
+
+      if (this.player2) {
+        if (e.code === 'Numpad0') {
+          e.preventDefault();
+          this.player2.triggerBunnyHop(this.entities);
+        } else if (e.code === 'Numpad1') {
+          this.player2.togglePlayDead(this.entities, this);
+        } else if (e.code === 'Numpad2') {
+          this.player2.performActionCrime(this.world, this.entities, this);
+        }
       }
     });
 
@@ -250,13 +404,16 @@ class Game {
     });
 
     // Auto-detect touch usage anywhere on screen
-    window.addEventListener('touchstart', () => {
+    window.addEventListener('touchstart', (e) => {
+      if (e.target && (e.target.tagName === 'INPUT' || e.target.tagName === 'SELECT' || e.target.tagName === 'BUTTON')) {
+        return;
+      }
       if (!this.manualInputOverride && this.inputMethod !== 'touch') {
         this.setInputMethod('touch', false);
       }
     }, { passive: true });
 
-    // Listen for responsive mode / device media-query changes (e.g. DevTools mobile toggle)
+    // Listen for responsive mode / device media-query changes
     if (window.matchMedia) {
       const mq = window.matchMedia('(pointer: coarse)');
       if (mq.addEventListener) {
@@ -267,7 +424,7 @@ class Game {
       }
     }
 
-    // Title Screen Mode Selector buttons
+    // Title Screen Input Mode Selector buttons
     const titleKbBtn = document.getElementById('title-mode-kb');
     const titleTouchBtn = document.getElementById('title-mode-touch');
     if (titleKbBtn) {
@@ -285,11 +442,30 @@ class Game {
       });
     }
 
+    // Play Mode Selector buttons (1P Solo / 2P Local / Online Cross-Platform)
+    const title1pBtn = document.getElementById('title-mode-1p');
+    const title2pBtn = document.getElementById('title-mode-2p');
+    const titleOnlineBtn = document.getElementById('title-mode-online');
+    const titleOnlineBox = document.getElementById('title-online-box');
+    this.selectedPlayMode = '1p'; // '1p' | '2p' | 'online'
+
+    const setPlayMode = (mode) => {
+      this.selectedPlayMode = mode;
+      title1pBtn?.classList.toggle('active', mode === '1p');
+      title2pBtn?.classList.toggle('active', mode === '2p');
+      titleOnlineBtn?.classList.toggle('active', mode === 'online');
+      titleOnlineBox?.classList.toggle('hidden', mode !== 'online');
+    };
+
+    title1pBtn?.addEventListener('click', () => setPlayMode('1p'));
+    title2pBtn?.addEventListener('click', () => setPlayMode('2p'));
+    titleOnlineBtn?.addEventListener('click', () => setPlayMode('online'));
+
     // Mouse buttons for quick tricks / action (only when in keyboard/mouse mode)
     this.canvas.addEventListener('mousedown', (e) => {
       if (this.paused || this.inputMethod === 'touch') return;
       if (e.button === 0) {
-        if (this.player.z > 10) {
+        if (this.player.z > 10 && this.player.role === 'possum') {
           this.player.performAirTrick('KICKFLIP', this.entities);
         } else {
           this.player.performActionCrime(this.world, this.entities, this);
@@ -300,18 +476,44 @@ class Game {
     });
     this.canvas.addEventListener('contextmenu', (e) => e.preventDefault());
 
-    // UI Buttons
+    // Start Game Button
     document.getElementById('btn-start-game').addEventListener('click', () => {
-      window.SFX.init();
-      window.SFX.startBGM(() => this.wantedLevel);
+      if (this.selectedPlayMode === '2p') {
+        this.player2 = new Player(this.world.hideout.x + 28, this.world.hideout.y);
+        this.player2.isPlayer2 = true;
+      } else {
+        this.player2 = null;
+      }
+
+      if (this.selectedPlayMode === 'online' && !this.network.connected) {
+        const codeInput = document.getElementById('title-mp-code');
+        const enteredCode = codeInput ? codeInput.value.trim() : '';
+        if (enteredCode) {
+          this.network.joinRoom(enteredCode);
+        } else {
+          this.network.hostRoom();
+        }
+      }
+
+      SFX.init();
+      SFX.startBGM(() => this.wantedLevel);
       document.getElementById('title-modal').classList.add('hidden');
       this.paused = false;
+      this.ui.updateRoleControlLabels();
+      this.ui.updateHUD();
     });
 
+    // Shop Modal Buttons
     document.getElementById('btn-shop').addEventListener('click', () => this.toggleShop());
     document.getElementById('touch-btn-shop').addEventListener('click', () => this.toggleShop());
     document.getElementById('btn-close-shop').addEventListener('click', () => this.toggleShop());
     document.getElementById('btn-resume').addEventListener('click', () => this.toggleShop());
+
+    // Multiplayer Lobby Modal Buttons
+    document.getElementById('btn-mp-lobby')?.addEventListener('click', () => this.toggleMpModal());
+    document.getElementById('touch-btn-mp')?.addEventListener('click', () => this.toggleMpModal());
+    document.getElementById('btn-close-mp')?.addEventListener('click', () => this.toggleMpModal());
+    document.getElementById('btn-mp-resume')?.addEventListener('click', () => this.toggleMpModal());
 
     const toggleInputModeBtn = () => {
       const nextMode = this.inputMethod === 'touch' ? 'keyboard' : 'touch';
@@ -333,15 +535,15 @@ class Game {
       if (this.shinies >= 25 && this.player.hp < this.player.maxHp) {
         this.shinies -= 25;
         this.player.hp = this.player.maxHp;
-        window.SFX.upgradeBuy();
+        SFX.upgradeBuy();
         this.entities.addFloatingText(this.player.x, this.player.y - 30, "🍕 FULL GRIT RESTORED!", "#51cf66", 17);
-        this.renderShop();
-        this.updateHUD();
+        this.ui.renderShop();
+        this.ui.updateHUD();
       }
     });
 
     const toggleMuteBoth = () => {
-      const muted = window.SFX.toggleMute();
+      const muted = SFX.toggleMute();
       const icon = muted ? '🔇' : '🔊';
       document.getElementById('btn-mute').textContent = icon;
       document.getElementById('touch-btn-mute').textContent = icon;
@@ -351,13 +553,15 @@ class Game {
 
     document.getElementById('btn-respawn').addEventListener('click', () => {
       document.getElementById('busted-modal').classList.add('hidden');
+      this.bustedModalOpen = false;
       this.player.reset();
+      if (this.player2) this.player2.reset();
       this.heat = 0;
       this.wantedLevel = 0;
       this.entities.authorities = [];
       this.entities.nets = [];
       this.paused = false;
-      this.updateHUD();
+      this.ui.updateHUD();
     });
   }
 
@@ -365,9 +569,9 @@ class Game {
     const joyZone = document.getElementById('touch-joystick-zone');
     const joyBase = document.getElementById('joystick-base');
     const joyKnob = document.getElementById('joystick-knob');
-    const maxRadius = 44;
 
     const updateJoystickFromPoint = (clientX, clientY) => {
+      const maxRadius = this.joyMaxRadius || 44;
       const rect = joyBase.getBoundingClientRect();
       const cx = rect.left + rect.width / 2;
       const cy = rect.top + rect.height / 2;
@@ -396,7 +600,7 @@ class Game {
     // Multi-touch events for Virtual Analog Thumbstick
     joyZone.addEventListener('touchstart', (e) => {
       e.preventDefault();
-      window.SFX.init();
+      SFX.init();
       const touch = e.changedTouches[0];
       this.touchState.joyTouchId = touch.identifier;
       updateJoystickFromPoint(touch.clientX, touch.clientY);
@@ -433,7 +637,7 @@ class Game {
         const t = e.changedTouches[i];
         if (t.clientX < window.innerWidth * 0.5 && this.touchState.joyTouchId === null) {
           e.preventDefault();
-          window.SFX.init();
+          SFX.init();
           this.touchState.joyTouchId = t.identifier;
           canvasOriginX = t.clientX;
           canvasOriginY = t.clientY;
@@ -444,6 +648,7 @@ class Game {
 
     this.canvas.addEventListener('touchmove', (e) => {
       if (this.touchState.joyTouchId === null) return;
+      const maxRadius = this.joyMaxRadius || 44;
       for (let i = 0; i < e.changedTouches.length; i++) {
         const t = e.changedTouches[i];
         if (t.identifier === this.touchState.joyTouchId) {
@@ -492,7 +697,7 @@ class Game {
       const handleStart = (e) => {
         e.preventDefault();
         e.stopPropagation();
-        window.SFX.init();
+        SFX.init();
         btn.classList.add('pressed');
         if (!this.paused) onDown();
       };
@@ -523,12 +728,12 @@ class Game {
       () => { this.touchState.boostPressed = false; }
     );
 
-    // 3. CRIME / TAG Button
+    // 3. CRIME / TAG / FIRE NET Button
     bindActionBtn('touch-btn-crime', () => {
       this.player.performActionCrime(this.world, this.entities, this);
     });
 
-    // 4. PLAY DEAD Button
+    // 4. PLAY DEAD / SIREN Button
     bindActionBtn('touch-btn-dead', () => {
       this.player.togglePlayDead(this.entities, this);
     });
@@ -545,11 +750,12 @@ class Game {
   }
 
   toggleShop() {
+    if (this.mpModalOpen) this.toggleMpModal();
     this.shopOpen = !this.shopOpen;
     const modal = document.getElementById('shop-modal');
     if (this.shopOpen) {
       this.paused = true;
-      this.renderShop();
+      this.ui.renderShop();
       modal.classList.remove('hidden');
     } else {
       this.paused = false;
@@ -557,48 +763,17 @@ class Game {
     }
   }
 
-  renderShop() {
-    document.getElementById('shop-shiny-count').textContent = this.shinies;
-    const container = document.getElementById('upgrade-list');
-    container.innerHTML = '';
-
-    for (const item of this.upgradeCatalog) {
-      const currentLvl = this.player.upgrades[item.key];
-      const isMax = currentLvl >= 3;
-      const cost = isMax ? 0 : item.costs[currentLvl];
-      const canAfford = !isMax && this.shinies >= cost;
-
-      const card = document.createElement('div');
-      card.className = `upgrade-card ${isMax ? 'maxed' : ''}`;
-      card.innerHTML = `
-        <div>
-          <div class="upg-top">
-            <div class="upg-icon">${item.icon}</div>
-            <div>
-              <div class="upg-title">${item.name}</div>
-              <div class="upg-tier">Tier ${currentLvl}/3: ${item.tiers[currentLvl]}</div>
-            </div>
-          </div>
-          <p class="upg-desc" style="margin-top:8px;">${item.desc}</p>
-        </div>
-        <button class="arcade-btn upg-buy-btn" ${(!canAfford || isMax) ? 'disabled' : ''}>
-          ${isMax ? '✔ MAXED OUT' : `UPGRADE TO ${item.tiers[currentLvl + 1]} (${cost} ✨)`}
-        </button>
-      `;
-
-      if (!isMax) {
-        card.querySelector('button').addEventListener('click', () => {
-          if (this.shinies >= cost) {
-            this.shinies -= cost;
-            this.player.upgrades[item.key]++;
-            window.SFX.upgradeBuy();
-            this.renderShop();
-            this.updateHUD();
-          }
-        });
-      }
-
-      container.appendChild(card);
+  toggleMpModal() {
+    if (this.shopOpen) this.toggleShop();
+    this.mpModalOpen = !this.mpModalOpen;
+    const modal = document.getElementById('mp-modal');
+    if (this.mpModalOpen) {
+      this.paused = true;
+      this.ui.updateMultiplayerUI();
+      modal.classList.remove('hidden');
+    } else {
+      this.paused = false;
+      modal.classList.add('hidden');
     }
   }
 
@@ -608,7 +783,7 @@ class Game {
     this.shinies += finalAmt;
     this.infamy += finalAmt * 5;
     this.checkDistrictUnlocks();
-    this.updateHUD();
+    this.ui.updateHUD();
   }
 
   recordCrime(crimeTitle, shinyReward, heatAdded, crimeCategory = 'snatch') {
@@ -632,7 +807,7 @@ class Game {
     this.wantedLevel = Math.min(5, Math.floor(this.heat / 85));
 
     if (this.wantedLevel > prevWanted) {
-      window.SFX.sirenchirp();
+      SFX.sirenchirp();
       this.entities.addFloatingText(this.player.x, this.player.y - 52, `🚨 WANTED LEVEL ${this.wantedLevel}!`, "#ff4d4f", 20);
     }
 
@@ -647,16 +822,30 @@ class Game {
     }
     setTimeout(() => toast.remove(), 3800);
 
+    // Broadcast crime to Cross-Platform Peers
+    if (this.network && this.network.connected) {
+      this.network.broadcastEvent('crime', {
+        title: crimeTitle,
+        reward: totalReward,
+        totalInfamy: this.infamy,
+        heat: this.heat,
+        heatAdded,
+        category: crimeCategory,
+        x: Math.round(this.player.x),
+        y: Math.round(this.player.y)
+      });
+    }
+
     // Check active Street Challenge (Bounty)
     this.checkBountyProgress(crimeCategory);
-    this.updateHUD();
+    this.ui.updateHUD();
   }
 
   checkDistrictUnlocks() {
     for (const d of this.world.districts) {
       if (!d.unlocked && this.infamy >= d.reqInfamy) {
         d.unlocked = true;
-        window.SFX.zoneUnlock();
+        SFX.zoneUnlock();
         this.triggerScreenShake(11, 0.45);
 
         // Celebration particles around Crimothy
@@ -683,7 +872,7 @@ class Game {
     }
   }
 
-  checkBountyProgress(category) {
+  checkBountyProgress(category, fromNetwork = false) {
     const b = this.bounties[this.currentBountyIdx];
     if (!b) return;
 
@@ -701,7 +890,7 @@ class Game {
         this.shinies += b.reward;
         this.infamy += b.reward * 15;
         this.checkDistrictUnlocks();
-        window.SFX.upgradeBuy();
+        SFX.upgradeBuy();
         this.entities.addFloatingText(
           this.player.x,
           this.player.y - 60,
@@ -733,143 +922,26 @@ class Game {
   }
 
   onPlayerBusted(caughtBy) {
-    this.paused = true;
+    // In Online Multiplayer, auto-respawn or allow Co-op Teammate Revive without freezing the world!
     const penalty = Math.floor(this.shinies * 0.2);
     this.shinies = Math.max(0, this.shinies - penalty);
 
-    document.getElementById('busted-reason').textContent =
-      `You got scooped up by ${caughtBy}! Animal Control confiscated ${penalty} ✨ Shinies as "evidence", but you kept all your scooter upgrades!`;
+    if (this.network && this.network.connected) {
+      this.bustedModalOpen = true;
+      document.getElementById('busted-reason').textContent =
+        `You got scooped up by ${caughtBy}! (-${penalty} ✨ Shinies). Click below to break out immediately, or wait for a Co-op Possum teammate to ride over and revive you!`;
+    } else {
+      this.paused = true;
+      document.getElementById('busted-reason').textContent =
+        `You got scooped up by ${caughtBy}! Animal Control confiscated ${penalty} ✨ Shinies as "evidence", but you kept all your scooter upgrades!`;
+    }
+
     document.getElementById('busted-stats').innerHTML = `
       <div>💀 Total Infamy: ${this.infamy}</div>
       <div>✨ Remaining Shinies: ${this.shinies}</div>
       <div>🚨 Crimes Committed: ${this.crimesCommitted}</div>
     `;
     document.getElementById('busted-modal').classList.remove('hidden');
-  }
-
-  updateContextualPrompt() {
-    const promptEl = document.getElementById('action-prompt');
-    let promptHTML = null;
-    const isTouch = this.inputMethod === 'touch';
-    const actKey = isTouch ? `<kbd>🎨 CRIME</kbd>` : `<kbd>E</kbd>`;
-    const shopKey = isTouch ? `<kbd>🛒 GARAGE</kbd>` : `<kbd>E</kbd> or <kbd>TAB</kbd>`;
-
-    if (this.world.isInsideAnyHideout(this.player.x, this.player.y, 12)) {
-      promptHTML = `${isTouch ? 'Tap' : 'Press'} ${shopKey} to Open Big Sal's Dumpster Garage!`;
-    } else {
-      for (const g of this.world.graffitiSpots) {
-        if (!g.tagged && Math.hypot(this.player.x - g.x, this.player.y - g.y) < 68) {
-          promptHTML = `${isTouch ? 'Tap' : 'Press'} ${actKey} to Spray-Paint "${g.slogan}"!`;
-          break;
-        }
-      }
-      if (!promptHTML) {
-        for (const p of this.world.props) {
-          if (p.type === 'dumpster' && !p.looted && Math.hypot(this.player.x - p.x, this.player.y - p.y) < 66) {
-            promptHTML = `${isTouch ? 'Tap' : 'Press'} ${actKey} (or Ram!) to Raid Dumpster!`;
-            break;
-          }
-        }
-      }
-    }
-
-    if (promptHTML) {
-      promptEl.innerHTML = promptHTML;
-      promptEl.classList.remove('hidden');
-    } else {
-      promptEl.classList.add('hidden');
-    }
-  }
-
-  updateHUD() {
-    // Bars
-    document.getElementById('hp-fill').style.width = `${(this.player.hp / this.player.maxHp) * 100}%`;
-    document.getElementById('boost-fill').style.width = `${(this.player.boost / this.player.maxBoost) * 100}%`;
-    document.getElementById('dead-fill').style.width = `${(this.player.playDeadEnergy / this.player.maxPlayDead) * 100}%`;
-
-    // Portrait status
-    const emojiEl = document.getElementById('portrait-emoji');
-    const stateEl = document.getElementById('portrait-state');
-    const boxEl = document.getElementById('possum-portrait');
-    if (this.player.isPlayingDead) {
-      emojiEl.textContent = '💀';
-      stateEl.textContent = 'PLAYING DEAD';
-      boxEl.style.borderColor = '#cc5de8';
-    } else if (this.player.z > 10) {
-      emojiEl.textContent = '🛴';
-      stateEl.textContent = 'SHREDDING AIR!';
-      boxEl.style.borderColor = '#63e6be';
-    } else if (this.wantedLevel >= 3) {
-      emojiEl.textContent = '😾';
-      stateEl.textContent = 'MOST WANTED';
-      boxEl.style.borderColor = '#ff6b6b';
-    } else {
-      emojiEl.textContent = '🦝';
-      stateEl.textContent = 'RIDING DIRTY';
-      boxEl.style.borderColor = '#f59f00';
-    }
-
-    // Combo Banner
-    const comboBox = document.getElementById('combo-box');
-    if (this.comboTimer > 0 && this.comboCount >= 2) {
-      comboBox.classList.remove('hidden');
-      document.getElementById('combo-multiplier').textContent = `${this.comboMultiplier}x CRIME COMBO!`;
-      document.getElementById('combo-score').textContent = `+${this.comboBank} SHINIES`;
-      document.getElementById('combo-timer-fill').style.width = `${(this.comboTimer / this.comboMaxTimer) * 100}%`;
-    } else {
-      comboBox.classList.add('hidden');
-    }
-
-    // Active Challenge
-    const b = this.bounties[this.currentBountyIdx];
-    if (b) {
-      document.getElementById('bounty-text').textContent = `${b.desc} (${b.progress}/${b.target}) — Reward: ${b.reward}✨`;
-    }
-
-    // District Status & Next Infamy Unlock Progress
-    const currDist = this.world.getDistrictAt(this.player.x, this.player.y);
-    const nextDist = this.world.getNextLockedDistrict();
-    const currDistEl = document.getElementById('current-district-name');
-    const nextDistEl = document.getElementById('next-district-status');
-
-    if (currDistEl && currDist) {
-      currDistEl.textContent = `📍 ${currDist.name} (${currDist.lootMult}x LOOT)`;
-      currDistEl.style.color = currDist.color;
-    }
-    if (nextDistEl) {
-      if (nextDist) {
-        nextDistEl.textContent = `🔒 NEXT: ${nextDist.name} (${this.infamy.toLocaleString()} / ${nextDist.reqInfamy.toLocaleString()} 💀)`;
-        nextDistEl.style.color = '#ffd43b';
-      } else {
-        nextDistEl.textContent = `👑 ALL 4 DISTRICTS UNLOCKED!`;
-        nextDistEl.style.color = '#51cf66';
-      }
-    }
-
-    // Wanted Stars & Heat
-    const stars = document.querySelectorAll('#wanted-stars .star');
-    stars.forEach((star) => {
-      const lvl = parseInt(star.getAttribute('data-level'), 10);
-      star.classList.toggle('active', lvl <= this.wantedLevel);
-    });
-
-    const heatPct = Math.min(100, (this.heat / 425) * 100);
-    document.getElementById('heat-fill').style.width = `${heatPct}%`;
-    const heatStatus = document.getElementById('heat-status');
-    if (this.player.isPlayingDead) {
-      heatStatus.textContent = 'HEAT: COOLING💀';
-      heatStatus.style.color = '#cc5de8';
-    } else if (this.wantedLevel === 0) {
-      heatStatus.textContent = 'HEAT: CHILL';
-      heatStatus.style.color = '#74c0fc';
-    } else {
-      heatStatus.textContent = `WANTED LVL ${this.wantedLevel}`;
-      heatStatus.style.color = '#ff6b6b';
-    }
-
-    // Currencies
-    document.getElementById('shiny-count').textContent = this.shinies;
-    document.getElementById('infamy-count').textContent = this.infamy;
   }
 
   drawMinimap() {
@@ -941,7 +1013,31 @@ class Game {
       ctx.fill();
     }
 
-    // Player (bright yellow dot)
+    // Remote Multiplayer Peers on Minimap
+    if (this.network && this.network.connected) {
+      for (const rp of this.network.remotePlayers.values()) {
+        ctx.fillStyle = rp.role === 'cop' ? '#339af0' : (rp.color || '#15aabf');
+        ctx.strokeStyle = '#fff';
+        ctx.lineWidth = 1.2;
+        ctx.beginPath();
+        ctx.arc(rp.x * scaleX, rp.y * scaleY, 4.2, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.stroke();
+      }
+    }
+
+    // Local Player 2 (if active)
+    if (this.player2) {
+      ctx.fillStyle = '#339af0';
+      ctx.strokeStyle = '#fff';
+      ctx.lineWidth = 1.2;
+      ctx.beginPath();
+      ctx.arc(this.player2.x * scaleX, this.player2.y * scaleY, 4, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.stroke();
+    }
+
+    // Local Player 1 (bright yellow dot)
     ctx.fillStyle = '#ffd43b';
     ctx.strokeStyle = '#000';
     ctx.lineWidth = 1.5;
@@ -962,6 +1058,7 @@ class Game {
     const mag = Math.hypot(ax, ay);
 
     if (mag > 0.22) {
+      this.gamepadActive = true;
       this.touchState.joyActive = true;
       this.touchState.joyAngle = Math.atan2(ay, ax);
       this.touchState.joyMag = Math.min(1, mag);
@@ -978,6 +1075,8 @@ class Game {
     const btnX = gp.buttons[2] && gp.buttons[2].pressed;
     const btnY = gp.buttons[3] && gp.buttons[3].pressed;
 
+    if (btnA || btnB || btnX || btnY) this.gamepadActive = true;
+
     if (btnA && !this.prevGpA) this.player.triggerBunnyHop(this.entities);
     if (btnX && !this.prevGpX) this.player.performActionCrime(this.world, this.entities, this);
     if (btnY && !this.prevGpY) this.player.togglePlayDead(this.entities, this);
@@ -986,11 +1085,41 @@ class Game {
     this.prevGpA = btnA;
     this.prevGpX = btnX;
     this.prevGpY = btnY;
+
+    // Player 2 Gamepad support
+    const gp2 = pads[1];
+    if (gp2 && this.player2) {
+      const ax2 = gp2.axes[0] || 0;
+      const ay2 = gp2.axes[1] || 0;
+      if (Math.hypot(ax2, ay2) > 0.2) {
+        this.player2.angle = Math.atan2(ay2, ax2);
+        this.player2.vx += Math.cos(this.player2.angle) * 340 * 0.05;
+        this.player2.vy += Math.sin(this.player2.angle) * 340 * 0.05;
+      }
+      const btnA2 = gp2.buttons[0] && gp2.buttons[0].pressed;
+      const btnB2 = (gp2.buttons[1] && gp2.buttons[1].pressed) || (gp2.buttons[7] && gp2.buttons[7].pressed);
+      const btnX2 = gp2.buttons[2] && gp2.buttons[2].pressed;
+      const btnY2 = gp2.buttons[3] && gp2.buttons[3].pressed;
+
+      if (btnA2 && !this.prevGpA2) this.player2.triggerBunnyHop(this.entities);
+      if (btnX2 && !this.prevGpX2) this.player2.performActionCrime(this.world, this.entities, this);
+      if (btnY2 && !this.prevGpY2) this.player2.togglePlayDead(this.entities, this);
+      this.player2.boostActive = !!btnB2;
+
+      this.prevGpA2 = btnA2;
+      this.prevGpX2 = btnX2;
+      this.prevGpY2 = btnY2;
+    }
   }
 
   loop(now) {
     const dt = Math.min(0.05, (now - this.lastFrameTime) / 1000);
     this.lastFrameTime = now;
+
+    // Always keep network packets & interpolation alive even if shop/modal is open!
+    if (this.network) {
+      this.network.update(dt);
+    }
 
     if (!this.paused) {
       this.time += dt;
@@ -998,15 +1127,22 @@ class Game {
 
       // Update World, Player, and Entities
       this.world.update(dt);
-      this.player.update(dt, this.keys, this.world, this.entities, this);
-      this.entities.update(dt, this.player, this);
+      if (!this.bustedModalOpen) {
+        this.player.update(dt, this.keys, this.world, this.entities, this);
+      }
+      if (this.player2) {
+        this.player2.update(dt, this.keys, this.world, this.entities, this);
+      }
+      const players = this.player2 ? [this.player, this.player2] : [this.player];
+      this.entities.update(dt, players, this);
 
       // Natural slow heat decay or fast hideout decay
-      const inHideout = !!this.world.isInsideAnyHideout(this.player.x, this.player.y);
+      const inHideout = !!this.world.isInsideAnyHideout(this.player.x, this.player.y) ||
+        (this.player2 && !!this.world.isInsideAnyHideout(this.player2.x, this.player2.y));
       if (inHideout) {
         this.reduceHeat(25 * dt);
-        // Slowly heal in hideout too!
         this.player.hp = Math.min(this.player.maxHp, this.player.hp + 8 * dt);
+        if (this.player2) this.player2.hp = Math.min(this.player2.maxHp, this.player2.hp + 8 * dt);
       } else if (this.heat > 0) {
         this.reduceHeat(1.8 * dt);
       }
@@ -1021,11 +1157,21 @@ class Game {
         }
       }
 
-      // Smooth Camera with Velocity Look-Ahead
-      const lookAheadX = this.player.vx * 0.22;
-      const lookAheadY = this.player.vy * 0.22;
-      const targetCamX = this.player.x + lookAheadX - this.canvas.width / 2;
-      const targetCamY = this.player.y + lookAheadY - this.canvas.height / 2;
+      // Smooth Camera with Velocity Look-Ahead & Adaptive Resolution View Size
+      let avgX = this.player.x;
+      let avgY = this.player.y;
+      let lookAheadX = this.player.vx * 0.22;
+      let lookAheadY = this.player.vy * 0.22;
+
+      if (this.player2) {
+        avgX = (this.player.x + this.player2.x) / 2;
+        avgY = (this.player.y + this.player2.y) / 2;
+        lookAheadX = (this.player.vx + this.player2.vx) * 0.11;
+        lookAheadY = (this.player.vy + this.player2.vy) * 0.11;
+      }
+
+      const targetCamX = avgX + lookAheadX - this.camera.viewW / 2;
+      const targetCamY = avgY + lookAheadY - this.camera.viewH / 2;
 
       this.camera.x += (targetCamX - this.camera.x) * Math.min(1, dt * 7);
       this.camera.y += (targetCamY - this.camera.y) * Math.min(1, dt * 7);
@@ -1034,8 +1180,8 @@ class Game {
         this.camera.shakeTimer -= dt;
       }
 
-      this.updateContextualPrompt();
-      this.updateHUD();
+      this.ui.updateContextualPrompt();
+      this.ui.updateHUD();
     }
 
     this.render();
@@ -1046,9 +1192,13 @@ class Game {
 
   render() {
     const ctx = this.ctx;
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
     ctx.clearRect(0, 0, this.canvas.width, this.canvas.height);
 
     ctx.save();
+    const scale = (this.dpr || 1) * (this.camera.zoom || 1);
+    ctx.scale(scale, scale);
+
     let shakeX = 0;
     let shakeY = 0;
     if (this.camera.shakeTimer > 0) {
@@ -1058,16 +1208,15 @@ class Game {
 
     ctx.translate(-this.camera.x + shakeX, -this.camera.y + shakeY);
 
-    // Draw World, Player & Entities
+    // Draw World, Entities, Remote Cross-Platform Players & Local Players
     this.world.draw(ctx, this.camera, this.time);
     this.entities.draw(ctx, this.time);
+    if (this.network && this.network.connected) {
+      this.network.drawRemotePlayers(ctx, this.time);
+    }
     this.player.draw(ctx, this.time);
+    if (this.player2) this.player2.draw(ctx, this.time);
 
     ctx.restore();
   }
 }
-
-window.addEventListener('DOMContentLoaded', () => {
-  window.game = new Game();
-});
-
